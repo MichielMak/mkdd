@@ -84,11 +84,18 @@ jobs:
           chmod +x MKDD-Dolphin-$version-x86_64.AppImage
           ./MKDD-Dolphin-$version-x86_64.AppImage                  # pick your disc image, then play
           ./MKDD-Dolphin-$version-x86_64.AppImage --dol build/MarioClub_us/main.dol   # boot your decomp build
+          ./MKDD-Dolphin-$version-x86_64.AppImage --pads           # show connected controllers and their ports
           \`\`\`
+
+          Gamepads connected at start are mapped to GameCube ports 1-4. Without one, the keyboard is port 1. Once you change the mapping in Dolphin, it stays yours. \`--no-automap\` skips it for one run.
 
           Built from $GITHUB_SHA. Dolphin comes from [pkgforge-dev/Dolphin-emu-AppImage](https://github.com/pkgforge-dev/Dolphin-emu-AppImage).
           EOF
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # The release is reused per Dolphin version: move its tag to this
+            # build, so the tag and source archives match the AppImages.
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
             gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber *.AppImage SHA256SUMS
             gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
           else
