@@ -3,14 +3,20 @@
 # The sharun AppRun binary runs this script. Dolphin's own AppRun.sh is kept
 # as AppRun.dolphin.sh and does the actual launch.
 #
-#   MKDD.AppImage                    boot the remembered disc (asks for one the first time)
-#   MKDD.AppImage DISC               boot DISC and remember it
+#   MKDD.AppImage                    settings window: disc, a few settings, Play
+#   MKDD.AppImage --game [DISC]      start the game right away, fullscreen (Steam, Steam Deck)
+#   MKDD.AppImage DISC               start DISC with the saved settings and remember it
+#   MKDD.AppImage --settings         the settings window
 #   MKDD.AppImage --dol [DOL] [DISC] boot a main.dol built by this decomp, with DISC's files
 #   MKDD.AppImage --pads             show connected controllers and their ports
 #   MKDD.AppImage --dolphin ARGS...  plain Dolphin
 #   MKDD.AppImage --tool ARGS...     dolphin-tool
 #   MKDD.AppImage --forget           forget the remembered disc
 #   MKDD.AppImage --help
+#
+# The settings window (settings.cpp) writes $CONFIG_DIR/settings.ini. Those
+# choices reach Dolphin as -C overrides for one run, so Dolphin's own config,
+# which an installed Dolphin shares, stays as it is.
 #
 # Before a game boots, connected gamepads are mapped to GameCube ports 1-4,
 # and gamepads plugged in while Dolphin runs get the next free port (see automap
@@ -19,13 +25,16 @@ set -e
 
 DOLPHIN="$APPDIR/AppRun.dolphin.sh"
 PADS_TOOL="$APPDIR/bin/mkdd-pads"
+SETTINGS_TOOL="$APPDIR/bin/mkdd-settings"
 # Dolphin's hooks read this. Its own uruntime set it; the type2 runtime does not.
 : "${APPIMAGE_ARCH:=$(uname -m)}"
 export APPIMAGE_ARCH
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mkdd-appimage"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/mkdd-appimage"
-DISC_FILE="$CONFIG_DIR/disc"
+SETTINGS="$CONFIG_DIR/settings.ini"
+# Where the disc path lived before settings.ini.
+OLD_DISC_FILE="$CONFIG_DIR/disc"
 DEFAULT_DOL="build/MarioClub_us/main.dol"
 SELF="${APPIMAGE##*/}"
 SELF="${SELF:-MKDD.AppImage}"
@@ -52,8 +61,10 @@ Mario Kart: Double Dash!! on Dolphin. You supply your own disc image.
 
 Usage: $SELF [--no-automap] [DISC | OPTION]
 
-  (no argument)          boot the remembered disc (asks for one the first time)
-  DISC                   boot DISC (ISO, RVZ, GCZ, CISO, WIA, ...) and remember it
+  (no argument)          settings window: pick the disc, change a few settings, Play
+  --game [DISC]          start the game right away in fullscreen, e.g. from Steam
+  DISC                   start DISC (ISO, RVZ, GCZ, CISO, WIA, ...) and remember it
+  --settings             the settings window
   --dol [DOL] [DISC]     boot a main.dol built by the decomp (default: $DEFAULT_DOL)
                          with the game files of DISC (default: the remembered disc)
   --pads                 show connected controllers and the ports they get
@@ -62,11 +73,12 @@ Usage: $SELF [--no-automap] [DISC | OPTION]
   --tool ARGS...         dolphin-tool
   --forget               forget the remembered disc
 
-Gamepads connected at start are mapped to GameCube ports 1-4. Without one, the
-keyboard is port 1. A gamepad plugged in later gets the next free port: stop and
-start the game to use it. Once you change the mapping in Dolphin, it stays yours.
+Escape quits the game. Gamepads connected at start are mapped to GameCube ports
+1-4. Without one, the keyboard is port 1. A gamepad plugged in later gets the
+next free port: quit and start the game again to use it. Once you change the
+mapping in Dolphin, it stays yours.
 
-Remembered disc: $DISC_FILE
+Settings: $SETTINGS
 Dolphin settings: $DOLPHIN_CONFIG
 EOF
 }
@@ -85,16 +97,42 @@ pick_disc() {
 	fi
 }
 
+# setting KEY DEFAULT: the value from settings.ini, or DEFAULT when the key is missing.
+setting() {
+	if [ -f "$SETTINGS" ] && v=$(awk -v k="$1" '
+		index($0, k "=") == 1 { print substr($0, length(k) + 2); found = 1; exit }
+		END { exit !found }' "$SETTINGS"); then
+		printf '%s\n' "$v"
+	else
+		printf '%s\n' "$2"
+	fi
+}
+
+# set_setting KEY VALUE
+set_setting() {
+	mkdir -p "$CONFIG_DIR"
+	{
+		# grep finds nothing when KEY was the only line; that is fine.
+		if [ -f "$SETTINGS" ]; then grep -v "^$1=" "$SETTINGS" || true; fi
+		printf '%s=%s\n' "$1" "$2"
+	} > "$SETTINGS.tmp"
+	mv -f "$SETTINGS.tmp" "$SETTINGS"
+}
+
+# The disc path used to live in its own file.
+if [ -f "$OLD_DISC_FILE" ]; then
+	[ -n "$(setting disc '')" ] || set_setting disc "$(cat "$OLD_DISC_FILE")"
+	rm -f "$OLD_DISC_FILE"
+fi
+
 remembered_disc() {
-	[ -f "$DISC_FILE" ] || return 0
-	d=$(cat "$DISC_FILE")
+	d=$(setting disc '')
 	[ -f "$d" ] && printf '%s\n' "$d"
 	return 0
 }
 
 remember_disc() {
-	mkdir -p "$CONFIG_DIR"
-	printf '%s\n' "$1" > "$DISC_FILE"
+	set_setting disc "$1"
 }
 
 abspath() {
@@ -155,7 +193,7 @@ extract_disc() {
 #
 # While Dolphin runs, mkdd-pads --watch reports controllers coming and going
 # (watch_pads below). A new gamepad gets the first free port, and the player is
-# told to stop and start the game, because Dolphin reads the mapping at game start.
+# told to start the game again, because Dolphin reads the mapping at game start.
 
 # ini_get FILE SECTION KEY: print the value, or nothing.
 ini_get() {
@@ -389,7 +427,7 @@ write_ports() {
 # Map connected gamepads to ports before Dolphin starts. Sets AUTOMAP_ARGS
 # (extra dolphin-emu arguments) and AUTOMAP_ACTIVE (watch for hotplug).
 automap() {
-	[ "${MKDD_AUTOMAP:-1}" = 0 ] && return 0
+	[ "${MKDD_AUTOMAP:-$(setting automap 1)}" = 0 ] && return 0
 	owner=$(pad_ini_owner)
 	case "$owner" in
 		adapter|user) return 0 ;;
@@ -453,7 +491,7 @@ pad_events() {
 
 # Hotplug: give a gamepad plugged in during the run a port and write its
 # mapping. Dolphin reads GCPadNew.ini when a game starts (Core.cpp, Pad::LoadConfig),
-# so it works after the game is stopped and started again. A pad that already
+# so it works once the game is started again. A pad that already
 # has a port needs nothing: Dolphin binds it again by name when it comes back.
 watch_pads() {
 	connected=
@@ -512,7 +550,7 @@ assign_port() {
 	done
 	if [ -z "$free" ]; then
 		if [ "$PORT_ON_2$PORT_ON_3$PORT_ON_4" = 000 ]; then
-			notify "Controller connected" "${dev#*/}: quit and start again to use it next to the first one."
+			notify "Controller connected" "${dev#*/}: quit and start the game again to use it next to the first one."
 		else
 			notify "Controller connected" "${dev#*/}: all ports are in use."
 		fi
@@ -521,7 +559,7 @@ assign_port() {
 	eval "PORT_DEV_$free=\$dev"
 	write_ports "$owner"
 	save_port_state
-	notify "Controller on port $free" "${dev#*/}: stop and start the game to use it."
+	notify "Controller on port $free" "${dev#*/}: quit and start the game again to use it."
 }
 
 save_port_state() {
@@ -584,6 +622,95 @@ show_pads() {
 	esac
 }
 
+# --- settings window and starting the game ----------------------------------------
+
+has_display() { [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; }
+
+# The settings window's choices as Dolphin overrides for this run (-C is not
+# saved). Always batch mode: no Dolphin main window, and quitting the game
+# (Escape, Dolphin's default Stop key) ends the run, as Steam expects.
+# run_overrides [fullscreen]: sets RUN_ARGS; "fullscreen" forces it on.
+RUN_ARGS=
+run_overrides() {
+	RUN_ARGS="-b -C Dolphin.Interface.ConfirmStop=False"
+	if [ "$1" = fullscreen ] || [ "$(setting fullscreen 1)" = 1 ]; then
+		RUN_ARGS="$RUN_ARGS -C Dolphin.Display.Fullscreen=True"
+	else
+		RUN_ARGS="$RUN_ARGS -C Dolphin.Display.Fullscreen=False"
+	fi
+	case "$(setting resolution 0)" in
+		0|1|2|3|4|5|6|8) RUN_ARGS="$RUN_ARGS -C Graphics.Settings.InternalResolution=$(setting resolution 0)" ;;
+	esac
+	case "$(setting backend '')" in
+		Vulkan|OGL) RUN_ARGS="$RUN_ARGS -C Dolphin.Core.GFXBackend=$(setting backend '')" ;;
+	esac
+	if [ "$(setting vsync 1)" = 1 ]; then
+		RUN_ARGS="$RUN_ARGS -C Graphics.Hardware.VSync=True"
+	else
+		RUN_ARGS="$RUN_ARGS -C Graphics.Hardware.VSync=False"
+	fi
+	if [ "$(setting widescreen 0)" = 1 ]; then
+		# 1 = AspectMode::ForceWide
+		RUN_ARGS="$RUN_ARGS -C Graphics.Settings.wideScreenHack=True -C Graphics.Settings.AspectRatio=1"
+	else
+		RUN_ARGS="$RUN_ARGS -C Graphics.Settings.wideScreenHack=False"
+	fi
+	vol=$(setting volume 100)
+	case "$vol" in
+		''|*[!0-9]*) ;;
+		*) [ "$vol" -le 100 ] && RUN_ARGS="$RUN_ARGS -C Dolphin.DSP.Volume=$vol" ;;
+	esac
+	return 0
+}
+
+# settings_window [NOTICE] [MODE]: show the window; Play starts the game in MODE.
+settings_window() {
+	if ! has_display || [ ! -x "$SETTINGS_TOOL" ]; then
+		# No window possible (e.g. over ssh): start the game as before.
+		play "$2" ""
+	fi
+	code=0
+	MKDD_DOLPHIN_VERSION=$(cat "$APPDIR/dolphin-version" 2>/dev/null || true) \
+		"$SETTINGS_TOOL" "$SETTINGS" "$1" || code=$?
+	case "$code" in
+		10) play "$2" "" asked ;;
+		11) exec "$DOLPHIN" dolphin-emu ;;
+		*) exit 0 ;;
+	esac
+}
+
+# boot_dol DOL DISC: boot a main.dol built by the decomp with DISC's files.
+boot_dol() {
+	[ -f "$1" ] || { say "No DOL at $1. Build it first: python configure.py && ninja"; exit 1; }
+	dol=$(abspath "$1")
+	root=$(extract_disc "$2")
+	# Dolphin boots <root>/sys/main.dol as a full disc, with <root>/files as its files.
+	cp -f "$dol" "$root/sys/main.dol"
+	automap
+	say "Booting $dol with the files of $2"
+	# shellcheck disable=SC2086
+	boot $RUN_ARGS -e "$root/sys/main.dol"
+}
+
+# play MODE [DISC] [asked]: start the game with the saved settings. MODE
+# "fullscreen" is --game. Without a disc, the settings window asks for one,
+# once: "asked" means it already did.
+play() {
+	d="$2"
+	[ -n "$d" ] || d=$(remembered_disc)
+	if [ -z "$d" ] && [ "$3" != asked ] && has_display && [ -x "$SETTINGS_TOOL" ]; then
+		settings_window "Pick your disc image, then press Play." "$1"
+	fi
+	disc=$(need_disc "$d")
+	run_overrides "$1"
+	if [ "$(setting use_dol 0)" = 1 ] && [ -n "$(setting dol '')" ]; then
+		boot_dol "$(setting dol '')" "$disc"
+	fi
+	automap
+	# shellcheck disable=SC2086
+	boot $RUN_ARGS -e "$disc"
+}
+
 # --- main ----------------------------------------------------------------------
 
 if [ "$1" = --no-automap ]; then
@@ -592,6 +719,11 @@ if [ "$1" = --no-automap ]; then
 fi
 
 case "$1" in
+	''|--settings)
+		settings_window "" "" ;;
+	--game)
+		shift
+		play fullscreen "$1" ;;
 	-h|--help)
 		usage
 		exit 0 ;;
@@ -605,27 +737,19 @@ case "$1" in
 		shift
 		exec "$DOLPHIN" dolphin-tool "$@" ;;
 	--forget)
-		rm -f "$DISC_FILE"
+		set_setting disc ''
 		say "Forgot the remembered disc."
 		exit 0 ;;
 	--dol)
 		shift
 		dol="${1:-$DEFAULT_DOL}"
 		[ $# -gt 0 ] && shift
-		[ -f "$dol" ] || { say "No DOL at $dol. Build it first: python configure.py && ninja"; exit 1; }
-		dol=$(abspath "$dol")
 		disc=$(need_disc "$1")
-		root=$(extract_disc "$disc")
-		# Dolphin boots <root>/sys/main.dol as a full disc, with <root>/files as its files.
-		cp -f "$dol" "$root/sys/main.dol"
-		automap
-		say "Booting $dol with the files of $disc"
-		boot -e "$root/sys/main.dol" ;;
+		run_overrides ""
+		boot_dol "$dol" "$disc" ;;
 	-*)
 		usage >&2
 		exit 1 ;;
 esac
 
-disc=$(need_disc "$1")
-automap
-boot -e "$disc"
+play "" "$1"

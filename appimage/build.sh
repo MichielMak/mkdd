@@ -5,7 +5,7 @@
 # unpacks it, puts appimage/AppRun.sh in front of Dolphin's own launcher and
 # packs it again. No game data goes in: the user picks a disc image at runtime.
 #
-# Needs: bash, curl, sha256sum, a C compiler. No root, FUSE or docker.
+# Needs: bash, curl, sha256sum, dpkg-deb, a C and C++ compiler. No root, FUSE or docker.
 #
 # Usage: appimage/build.sh
 #   ARCH=x86_64|aarch64  target, default: this machine (appimagetool runs natively)
@@ -40,6 +40,18 @@ TOOL_VERSION=1.9.1
 RUNTIME_VERSION=20251108
 TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/$TOOL_VERSION/appimagetool-$ARCH.AppImage"
 RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/$RUNTIME_VERSION/runtime-$ARCH"
+# Qt 6.4 headers (Debian 12) for the settings window. It links the Qt 6
+# libraries Dolphin bundles (6.12 in 2609a); Qt keeps binary compatibility
+# within 6.x, so older headers are fine.
+QTDEV_DEB="qt6-base-dev_6.4.2%2Bdfsg-10"
+QTDEV_POOL="http://deb.debian.org/debian/pool/main/q/qt6-base"
+QTDEV_SNAPSHOT="https://snapshot.debian.org/archive/debian/20250101T000000Z/pool/main/q/qt6-base"
+case "$ARCH" in
+  x86_64)  QTDEV_ARCH=amd64; TRIPLET=x86_64-linux-gnu
+           QTDEV_SHA256=6dd109236a612ab8f4acde31c6b7f71ef566ac66cd3b0b77d4d5114ba589ca5f ;;
+  aarch64) QTDEV_ARCH=arm64; TRIPLET=aarch64-linux-gnu
+           QTDEV_SHA256=53b9a0bba955f26dd8ba647e1995830ba9d9e72e50a24852045575d15b3c44dd ;;
+esac
 case "$ARCH" in
   x86_64)
     TOOL_SHA256=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
@@ -54,11 +66,13 @@ esac
 fetch() {
   if [ -f "$3" ] && echo "$2  $3" | sha256sum -c - >/dev/null 2>&1; then return 0; fi
   echo ">> downloading $1"
-  curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 -o "$3" "$1"
+  # return, not exit: a caller may try another URL. Plain calls still stop the
+  # build through set -e.
+  curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 -o "$3" "$1" || return 1
   if ! echo "$2  $3" | sha256sum -c - >/dev/null 2>&1; then
     echo "$1 does not match its pinned SHA-256" >&2
     rm -f "$3"
-    exit 1
+    return 1
   fi
 }
 
@@ -66,6 +80,10 @@ mkdir -p "$BUILD" "$OUTDIR"
 fetch "$DOLPHIN_URL" "$DOLPHIN_SHA256" "$BUILD/dolphin.AppImage"
 fetch "$TOOL_URL" "$TOOL_SHA256" "$BUILD/appimagetool"
 fetch "$RUNTIME_URL" "$RUNTIME_SHA256" "$BUILD/runtime"
+# Debian moves old packages out of its pool; the snapshot keeps them.
+if ! fetch "$QTDEV_POOL/${QTDEV_DEB}_$QTDEV_ARCH.deb" "$QTDEV_SHA256" "$BUILD/qt6-base-dev.deb" 2>/dev/null; then
+  fetch "$QTDEV_SNAPSHOT/${QTDEV_DEB}_$QTDEV_ARCH.deb" "$QTDEV_SHA256" "$BUILD/qt6-base-dev.deb"
+fi
 chmod +x "$BUILD/dolphin.AppImage" "$BUILD/appimagetool"
 
 # --- unpack Dolphin ------------------------------------------------------------
@@ -93,6 +111,20 @@ rm -f "$APPDIR/bin/10-self-updater.hook"
 "${CC:-cc}" -O2 -Wall -Wextra -o "$APPDIR/shared/bin/mkdd-pads" "$HERE/pads.c" \
   "$APPDIR/shared/lib/libSDL3.so.0" -Wl,--unresolved-symbols=ignore-in-shared-libs
 ln -f "$APPDIR/sharun" "$APPDIR/bin/mkdd-pads"
+
+# mkdd-settings is the window shown without arguments. Same scheme: Qt 6.4
+# headers from the Debian package, the bundled Qt libraries by path.
+QTINC="$BUILD/qt6-base-dev/usr/include/$TRIPLET/qt6"
+if [ ! -d "$QTINC/QtWidgets" ]; then
+  rm -rf "$BUILD/qt6-base-dev"
+  dpkg-deb -x "$BUILD/qt6-base-dev.deb" "$BUILD/qt6-base-dev"
+fi
+"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -fPIC -o "$APPDIR/shared/bin/mkdd-settings" "$HERE/settings.cpp" \
+  -I"$QTINC" -I"$QTINC/QtCore" -I"$QTINC/QtGui" -I"$QTINC/QtWidgets" \
+  "$APPDIR/shared/lib/libQt6Widgets.so.6" "$APPDIR/shared/lib/libQt6Gui.so.6" "$APPDIR/shared/lib/libQt6Core.so.6" \
+  -Wl,--unresolved-symbols=ignore-in-shared-libs
+ln -f "$APPDIR/sharun" "$APPDIR/bin/mkdd-settings"
+echo "$DOLPHIN_VERSION" > "$APPDIR/dolphin-version"
 
 rm -f "$APPDIR"/*.desktop "$APPDIR/.DirIcon"
 cp "$HERE/mkdd.desktop" "$APPDIR/mkdd.desktop"
