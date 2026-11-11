@@ -12,8 +12,9 @@
 #   MKDD.AppImage --forget           forget the remembered disc
 #   MKDD.AppImage --help
 #
-# Before a game boots, connected gamepads are mapped to GameCube ports 1-4
-# (see automap below). --no-automap or MKDD_AUTOMAP=0 skips that.
+# Before a game boots, connected gamepads are mapped to GameCube ports 1-4,
+# and gamepads plugged in while Dolphin runs get the next free port (see automap
+# below). --no-automap or MKDD_AUTOMAP=0 skips that.
 set -e
 
 DOLPHIN="$APPDIR/AppRun.dolphin.sh"
@@ -62,7 +63,8 @@ Usage: $SELF [--no-automap] [DISC | OPTION]
   --forget               forget the remembered disc
 
 Gamepads connected at start are mapped to GameCube ports 1-4. Without one, the
-keyboard is port 1. Once you change the mapping in Dolphin, it stays yours.
+keyboard is port 1. A gamepad plugged in later gets the next free port: stop and
+start the game to use it. Once you change the mapping in Dolphin, it stays yours.
 
 Remembered disc: $DISC_FILE
 Dolphin settings: $DOLPHIN_CONFIG
@@ -150,6 +152,10 @@ extract_disc() {
 # A GCPadNew.ini that automap did not write is only taken over when it maps no
 # gamepad at all (Dolphin's keyboard defaults); it is kept in BACKUP_INI and put
 # back when no gamepad is connected, so the keyboard works again.
+#
+# While Dolphin runs, mkdd-pads --watch reports controllers coming and going
+# (watch_pads below). A new gamepad gets the first free port, and the player is
+# told to stop and start the game, because Dolphin reads the mapping at game start.
 
 # ini_get FILE SECTION KEY: print the value, or nothing.
 ini_get() {
@@ -191,6 +197,7 @@ ini_contains() {
 }
 
 # ini_merge NEW CURRENT: print CURRENT with every key of NEW set to its NEW value.
+# A line "-key" in NEW removes that key from the section.
 ini_merge() {
 	awk '
 		function flush(   j) {
@@ -202,6 +209,7 @@ ini_merge() {
 		{ sub(/\r$/, "") }
 		FILENAME == ARGV[1] {
 			if (/^\[/) { sec = $0; if (!(sec in nkeys)) { nkeys[sec] = 0; secs[++nsecs] = sec } ; next }
+			if (/^-/) { del[sec SUBSEP substr($0, 2)] = 1; next }
 			if ((i = index($0, "="))) {
 				key = substr($0, 1, i - 1); sub(/[ \t]+$/, "", key)
 				v = substr($0, i + 1); sub(/^[ \t]+/, "", v)
@@ -212,6 +220,7 @@ ini_merge() {
 		/^\[/ { flush(); cur = $0; print; next }
 		(i = index($0, "=")) && (cur in nkeys) {
 			key = substr($0, 1, i - 1); sub(/[ \t]+$/, "", key)
+			if ((cur SUBSEP key) in del) next
 			if ((cur SUBSEP key) in pos) {
 				if (!done[cur SUBSEP pos[cur SUBSEP key]]) print key " = " val[cur SUBSEP key]
 				done[cur SUBSEP pos[cur SUBSEP key]] = 1
@@ -247,41 +256,57 @@ list_pads() {
 	fi
 }
 
-# The gamepads that get a port: up to 4, as "<id>\t<name>".
-port_pads() {
-	printf '%s\n' "$1" | awk -F '\t' 'NF >= 3 && $2 == 1 && n < 4 { n++; print $1 "\t" $3 }'
+# The gamepads in a pad list, as "<id>/<name>" (the part after "SDL/").
+gamepads() {
+	printf '%s\n' "$1" | awk -F '\t' 'NF >= 3 && $2 == 1 { print $1 "/" $3 }'
 }
 
-# GCPadNew.ini section for one port. GameCube buttons go by position:
-# A is the bottom face button, B the left one.
-pad_section() {
-	cat <<EOF
-[GCPad$1]
-Device = SDL/$2
-Buttons/A = \`Button S\`
-Buttons/B = \`Button W\`
-Buttons/X = \`Button E\`
-Buttons/Y = \`Button N\`
-Buttons/Z = \`Shoulder R\`
-Buttons/Start = \`Start\`
-Main Stick/Up = \`Left Y+\`
-Main Stick/Down = \`Left Y-\`
-Main Stick/Left = \`Left X-\`
-Main Stick/Right = \`Left X+\`
-C-Stick/Up = \`Right Y+\`
-C-Stick/Down = \`Right Y-\`
-C-Stick/Left = \`Right X-\`
-C-Stick/Right = \`Right X+\`
-Triggers/L = \`Trigger L\`
-Triggers/R = \`Trigger R\`
-Triggers/L-Analog = \`Trigger L\`
-Triggers/R-Analog = \`Trigger R\`
-D-Pad/Up = \`Pad N\`
-D-Pad/Down = \`Pad S\`
-D-Pad/Left = \`Pad W\`
-D-Pad/Right = \`Pad E\`
-Rumble/Motor = \`Motor\`
-EOF
+# The mapping for a gamepad. GameCube buttons go by position: A is the bottom
+# face button, B the left one.
+PAD_MAP='Buttons/A = `Button S`
+Buttons/B = `Button W`
+Buttons/X = `Button E`
+Buttons/Y = `Button N`
+Buttons/Z = `Shoulder R`
+Buttons/Start = `Start`
+Main Stick/Up = `Left Y+`
+Main Stick/Down = `Left Y-`
+Main Stick/Left = `Left X-`
+Main Stick/Right = `Left X+`
+C-Stick/Up = `Right Y+`
+C-Stick/Down = `Right Y-`
+C-Stick/Left = `Right X-`
+C-Stick/Right = `Right X+`
+Triggers/L = `Trigger L`
+Triggers/R = `Trigger R`
+Triggers/L-Analog = `Trigger L`
+Triggers/R-Analog = `Trigger R`
+D-Pad/Up = `Pad N`
+D-Pad/Down = `Pad S`
+D-Pad/Left = `Pad W`
+D-Pad/Right = `Pad E`
+Rumble/Motor = `Motor`'
+# Keys from Dolphin's keyboard defaults that do not suit a gamepad: the square
+# stick calibration would cut off the diagonals of a round stick.
+PAD_DROP='Main Stick/Modifier
+Main Stick/Calibration
+C-Stick/Modifier
+C-Stick/Calibration'
+# A port turned on for hotplug but with no gamepad yet gets a device that does
+# not exist. Dolphin then shows the port as unplugged to the game; without a
+# section it would fall back to the keyboard and every port would move at once.
+NO_PAD_DEVICE="SDL/0/No controller (mkdd-appimage)"
+
+# section PORT [ID/NAME]: GCPadNew.ini section for a port, empty without a pad.
+section() {
+	printf '[GCPad%s]\n' "$1"
+	if [ -n "$2" ]; then
+		printf 'Device = SDL/%s\n%s\n' "$2" "$PAD_MAP"
+		printf '%s\n' "$PAD_DROP" | sed 's/^/-/'
+	else
+		printf 'Device = %s\n' "$NO_PAD_DEVICE"
+		printf '%s\n' "$PAD_MAP" | sed 's/ = .*//; s/^/-/'
+	fi
 }
 
 # Who owns GCPadNew.ini. Prints: absent, automap, adoptable, adapter or user.
@@ -293,7 +318,14 @@ pad_ini_owner() {
 	if [ ! -f "$PAD_INI" ]; then
 		echo absent
 	elif [ -f "$WRITTEN_INI" ]; then
-		if ini_contains "$WRITTEN_INI" "$PAD_INI"; then echo automap; else echo user; fi
+		# The previous copy counts too: Dolphin can save the mapping it loaded at
+		# the last game start over a hotplug write, e.g. from the Controllers window.
+		if ini_contains "$WRITTEN_INI" "$PAD_INI" \
+			|| { [ -f "$WRITTEN_INI.prev" ] && ini_contains "$WRITTEN_INI.prev" "$PAD_INI"; }; then
+			echo automap
+		else
+			echo user
+		fi
 	elif grep -qE '^Device *= *(SDL|evdev)/' "$PAD_INI"; then
 		# The user mapped a controller themselves.
 		echo user
@@ -303,8 +335,59 @@ pad_ini_owner() {
 	fi
 }
 
-# Map connected gamepads to ports. Sets AUTOMAP_ARGS (extra dolphin-emu arguments).
+# Port state. PORT_DEV_n is the "<id>/<name>" of the gamepad on port n, empty
+# for none. PORT_ON_n: 1 = a standard controller this run, 2 = free to turn on,
+# 0 = the user set the port up as something else.
+PORT_DEV_1= PORT_DEV_2= PORT_DEV_3= PORT_DEV_4=
+PORT_ON_1=0 PORT_ON_2=0 PORT_ON_3=0 PORT_ON_4=0
 AUTOMAP_ARGS=
+AUTOMAP_ACTIVE=0
+
+read_port_setup() {
+	for n in 1 2 3 4; do
+		cur=$(ini_get "$MAIN_INI" Core "SIDevice$((n - 1))")
+		# 6 = SIDEVICE_GC_CONTROLLER, Dolphin's default for port 1 only.
+		[ "$n" = 1 ] && [ -z "$cur" ] && cur=6
+		case "$cur" in
+			6) on=1 ;;
+			''|0) on=2 ;;
+			*) on=0 ;;
+		esac
+		eval "PORT_ON_$n=$on"
+	done
+}
+
+# Write the port state into GCPadNew.ini, taking over a keyboard-only file
+# first, and keep a copy of what was written.
+write_ports() {
+	owner="$1"
+	mkdir -p "$CONFIG_DIR" "$DOLPHIN_CONFIG"
+	[ "$owner" = adoptable ] && cp -f "$PAD_INI" "$BACKUP_INI"
+	new="$CONFIG_DIR/GCPadNew.new.ini"
+	: > "$new"
+	for n in 1 2 3 4; do
+		# Names of their own: sh has no local variables, and callers use dev and on.
+		eval "w_dev=\$PORT_DEV_$n w_on=\$PORT_ON_$n"
+		if [ -n "$w_dev" ]; then
+			section "$n" "$w_dev" >> "$new"
+		elif [ "$w_on" = 1 ] && [ "$n" != 1 ]; then
+			# Port 1 without a gamepad keeps the keyboard.
+			section "$n" >> "$new"
+		fi
+	done
+	if [ -f "$PAD_INI" ]; then
+		ini_merge "$new" "$PAD_INI" > "$PAD_INI.mkdd-tmp"
+	else
+		grep -v '^-' "$new" > "$PAD_INI.mkdd-tmp" || true
+	fi
+	mv -f "$PAD_INI.mkdd-tmp" "$PAD_INI"
+	[ -f "$WRITTEN_INI" ] && mv -f "$WRITTEN_INI" "$WRITTEN_INI.prev"
+	grep -v '^-' "$new" > "$WRITTEN_INI" || true
+	rm -f "$new"
+}
+
+# Map connected gamepads to ports before Dolphin starts. Sets AUTOMAP_ARGS
+# (extra dolphin-emu arguments) and AUTOMAP_ACTIVE (watch for hotplug).
 automap() {
 	[ "${MKDD_AUTOMAP:-1}" = 0 ] && return 0
 	owner=$(pad_ini_owner)
@@ -312,50 +395,166 @@ automap() {
 		adapter|user) return 0 ;;
 	esac
 	pads=$(list_pads) || { say "Controller detection failed; leaving the mapping alone."; return 0; }
-	ports=$(port_pads "$pads")
+	AUTOMAP_ACTIVE=1
+	read_port_setup
+	found=$(gamepads "$pads")
 
-	if [ -z "$ports" ]; then
-		# No gamepad: give the keyboard back if automap had taken over.
+	if [ -z "$found" ]; then
+		# No gamepad: give the keyboard back if automap had taken over. Ports
+		# 2-4 stay off, so a gamepad plugged in during this run gets port 1.
 		if [ "$owner" = automap ]; then
 			if [ -f "$BACKUP_INI" ]; then mv -f "$BACKUP_INI" "$PAD_INI"; else rm -f "$PAD_INI"; fi
-			rm -f "$WRITTEN_INI"
+			rm -f "$WRITTEN_INI" "$WRITTEN_INI.prev"
 		fi
+		for n in 2 3 4; do eval "[ \"\$PORT_ON_$n\" = 2 ] && PORT_ON_$n=0"; done
 		say "No gamepad found; port 1 uses Dolphin's keyboard mapping."
 		return 0
 	fi
 
-	mkdir -p "$CONFIG_DIR" "$DOLPHIN_CONFIG"
-	[ "$owner" = adoptable ] && cp -f "$PAD_INI" "$BACKUP_INI"
-	new="$CONFIG_DIR/GCPadNew.new.ini"
-	: > "$new"
-	port=0
-	printf '%s\n' "$ports" | while IFS="$(printf '\t')" read -r id name; do
-		port=$((port + 1))
-		pad_section "$port" "$id/$name" >> "$new"
-	done
-	if [ -f "$PAD_INI" ]; then
-		ini_merge "$new" "$PAD_INI" > "$PAD_INI.mkdd-tmp"
-	else
-		cp "$new" "$PAD_INI.mkdd-tmp"
-	fi
-	mv -f "$PAD_INI.mkdd-tmp" "$PAD_INI"
-	mv -f "$new" "$WRITTEN_INI"
-
-	port=0
-	printf '%s\n' "$ports" | while IFS="$(printf '\t')" read -r id name; do
-		port=$((port + 1))
-		say "Port $port: $name"
-	done
-	# Turn on ports 2-4 for this run only (-C is not saved), unless the user set them up.
-	n=$(printf '%s\n' "$ports" | wc -l)
-	k=1
-	while [ "$k" -lt "$n" ]; do
-		cur=$(ini_get "$MAIN_INI" Core "SIDevice$k")
-		if [ -z "$cur" ] || [ "$cur" = 0 ]; then
-			AUTOMAP_ARGS="$AUTOMAP_ARGS -C Dolphin.Core.SIDevice$k=6"
+	# Pads fill the ports in order. Every free port is turned on for this run
+	# (-C is not saved), so a gamepad plugged in later has somewhere to go.
+	rest="$found"
+	for n in 1 2 3 4; do
+		eval "on=\$PORT_ON_$n"
+		[ "$on" = 0 ] && continue
+		if [ "$on" = 2 ]; then
+			eval "PORT_ON_$n=1"
+			AUTOMAP_ARGS="$AUTOMAP_ARGS -C Dolphin.Core.SIDevice$((n - 1))=6"
 		fi
-		k=$((k + 1))
+		[ -n "$rest" ] || continue
+		dev=$(printf '%s\n' "$rest" | head -n 1)
+		rest=$(printf '%s\n' "$rest" | sed 1d)
+		eval "PORT_DEV_$n=\$dev"
+		say "Port $n: ${dev#*/}"
 	done
+	write_ports "$owner"
+}
+
+# notify TITLE TEXT: tell the player, also outside the terminal.
+notify() {
+	say "$1: $2"
+	if command -v notify-send >/dev/null 2>&1; then
+		notify-send -a "Mario Kart: Double Dash!!" "$1" "$2" >/dev/null 2>&1 || true
+	fi
+}
+
+# The controller events while Dolphin runs: lines "<tag>\t<id>\t<gamepad>\t<name>"
+# with tag "=" (there at start), "+" (plugged in) or "-" (unplugged), and a
+# line "." after the "=" lines. MKDD_PADS_EVENTS replaces them (for testing).
+pad_events() {
+	if [ -n "${MKDD_PADS_EVENTS+x}" ]; then
+		printf '%s\n' "$MKDD_PADS_EVENTS"
+		return 0
+	fi
+	hints=$(ini_pairs "$MAIN_INI" SDL_Hints | tr '\n' ' ')
+	# shellcheck disable=SC2086
+	"$PADS_TOOL" --watch "$1" $hints 2>/dev/null
+}
+
+# Hotplug: give a gamepad plugged in during the run a port and write its
+# mapping. Dolphin reads GCPadNew.ini when a game starts (Core.cpp, Pad::LoadConfig),
+# so it works after the game is stopped and started again. A pad that already
+# has a port needs nothing: Dolphin binds it again by name when it comes back.
+watch_pads() {
+	connected=
+	initial=
+	pad_events "$1" | while IFS="$(printf '\t')" read -r tag id gamepad name; do
+		dev="$id/$name"
+		case "$tag" in
+			-)
+				connected=$(printf '%s\n' "$connected" | grep -vxF -- "$dev" || true)
+				continue ;;
+			=)
+				connected=$(printf '%s\n%s' "$connected" "$dev")
+				[ "$gamepad" = 1 ] && initial=$(printf '%s\n%s' "$initial" "$dev")
+				continue ;;
+			.)
+				# Pads that were there at start but missed by automap, e.g. plugged
+				# in while Dolphin started.
+				todo="$initial" ;;
+			+)
+				connected=$(printf '%s\n%s' "$connected" "$dev")
+				[ "$gamepad" = 1 ] || continue
+				todo="$dev" ;;
+			*) continue ;;
+		esac
+		printf '%s\n' "$todo" | while IFS= read -r dev; do
+			[ -n "$dev" ] || continue
+			assign_port "$dev" "$connected"
+		done
+	done
+}
+
+# assign_port ID/NAME CONNECTED: give a new gamepad the first port that is on
+# and has no connected gamepad. The port state lives in this file, since the
+# watch loop runs in subshells.
+assign_port() {
+	dev="$1"
+	connected="$2"
+	state="$CONFIG_DIR/ports.run"
+	# shellcheck disable=SC1090
+	[ -f "$state" ] && . "$state"
+	for n in 1 2 3 4; do
+		eval "[ \"\$PORT_DEV_$n\" = \"\$dev\" ]" && return 0
+	done
+	owner=$(pad_ini_owner)
+	case "$owner" in
+		adapter|user) return 0 ;;
+	esac
+	free=
+	for n in 1 2 3 4; do
+		eval "on=\$PORT_ON_$n cur=\$PORT_DEV_$n"
+		[ "$on" = 1 ] || continue
+		if [ -z "$cur" ] || ! printf '%s\n' "$connected" | grep -qxF -- "$cur"; then
+			free=$n
+			break
+		fi
+	done
+	if [ -z "$free" ]; then
+		if [ "$PORT_ON_2$PORT_ON_3$PORT_ON_4" = 000 ]; then
+			notify "Controller connected" "${dev#*/}: quit and start again to use it next to the first one."
+		else
+			notify "Controller connected" "${dev#*/}: all ports are in use."
+		fi
+		return 0
+	fi
+	eval "PORT_DEV_$free=\$dev"
+	write_ports "$owner"
+	save_port_state
+	notify "Controller on port $free" "${dev#*/}: stop and start the game to use it."
+}
+
+save_port_state() {
+	mkdir -p "$CONFIG_DIR"
+	for n in 1 2 3 4; do
+		eval "v=\$PORT_DEV_$n o=\$PORT_ON_$n"
+		printf 'PORT_DEV_%s=%s\nPORT_ON_%s=%s\n' "$n" "$(quote "$v")" "$n" "$o"
+	done > "$CONFIG_DIR/ports.run"
+}
+
+# quote STRING: STRING as a single-quoted shell word.
+quote() {
+	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# boot ARGS...: start Dolphin; with automap on, watch for hotplug while it runs.
+boot() {
+	if [ "$AUTOMAP_ACTIVE" = 1 ] && { [ -n "${MKDD_PADS_EVENTS+x}" ] || [ -x "$PADS_TOOL" ]; }; then
+		save_port_state
+		# shellcheck disable=SC2086
+		"$DOLPHIN" dolphin-emu $AUTOMAP_ARGS "$@" &
+		dolphin_pid=$!
+		watch_pads "$dolphin_pid" &
+		watch_pid=$!
+		status=0
+		wait "$dolphin_pid" || status=$?
+		# mkdd-pads stops by itself within half a second once Dolphin is gone.
+		wait "$watch_pid" || true
+		rm -f "$CONFIG_DIR/ports.run"
+		exit "$status"
+	fi
+	# shellcheck disable=SC2086
+	exec "$DOLPHIN" dolphin-emu $AUTOMAP_ARGS "$@"
 }
 
 show_pads() {
@@ -377,7 +576,7 @@ show_pads() {
 		adapter) echo "Mapping: left alone, Dolphin uses the GameCube adapter." ;;
 		user) echo "Mapping: yours, automap leaves $PAD_INI alone." ;;
 		*)
-			if [ -n "$(port_pads "$pads")" ]; then
+			if [ -n "$(gamepads "$pads")" ]; then
 				echo "Mapping: automap writes $PAD_INI at the next boot."
 			else
 				echo "Mapping: Dolphin's keyboard mapping on port 1 (no gamepad)."
@@ -421,8 +620,7 @@ case "$1" in
 		cp -f "$dol" "$root/sys/main.dol"
 		automap
 		say "Booting $dol with the files of $disc"
-		# shellcheck disable=SC2086
-		exec "$DOLPHIN" dolphin-emu $AUTOMAP_ARGS -e "$root/sys/main.dol" ;;
+		boot -e "$root/sys/main.dol" ;;
 	-*)
 		usage >&2
 		exit 1 ;;
@@ -430,5 +628,4 @@ esac
 
 disc=$(need_disc "$1")
 automap
-# shellcheck disable=SC2086
-exec "$DOLPHIN" dolphin-emu $AUTOMAP_ARGS -e "$disc"
+boot -e "$disc"

@@ -46,7 +46,16 @@ is port 1 (Dolphin's default keys).
 | Control stick, C stick | left stick, right stick |
 | D-pad, Start | D-pad, Start |
 
-Plug a gamepad in before starting. One plugged in during a game is mapped at the next start.
+Plugging in while Dolphin runs works too:
+
+- A pad that was there at start can be unplugged and plugged back in at any time, even mid-race.
+  Dolphin finds it again by name.
+- A new pad gets the first free port right away, and you get a notice (`notify-send`, and in the terminal).
+  Stop the game and start it again in the same Dolphin window to use it: Dolphin reads the mapping when a
+  game starts, not while it runs.
+- When at least one pad was connected at start, ports 2-4 are on for the whole run and show as unplugged
+  until a pad takes them. Without any pad at start they stay off, so the first pad plugged in later gets
+  port 1 and a second one needs Dolphin to be started again.
 
 The mapping stays yours once you change it: remap anything in `--dolphin`, Controllers, and automap leaves
 `GCPadNew.ini` alone from then on. It also leaves alone a mapping you had made before, and does nothing when
@@ -65,6 +74,14 @@ How it works:
    remapped, and automap stops.
 5. A keyboard-only `GCPadNew.ini` (Dolphin's default) is backed up before the first write and put back when no
    gamepad is connected.
+6. Hotplug: the launcher runs Dolphin as a child instead of replacing itself with it, and starts
+   `mkdd-pads --watch <Dolphin's PID>` next to it. That reports controllers coming and going (SDL's
+   `JOYSTICK_ADDED`/`REMOVED`, with Dolphin's id numbering) and exits within half a second of Dolphin.
+   A new gamepad's mapping is written like the others. Ports without a pad get a device that does not exist,
+   so they read as unplugged; without a section Dolphin would put the keyboard on every port.
+7. Dolphin can save the mapping it loaded at the last game start over a hotplug write, for example from the
+   Controllers window. The previous copy (`GCPadNew.written.ini.prev`) also counts as automap's, so that is
+   not mistaken for your own remap.
 
 ## How `--dol` works
 
