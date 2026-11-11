@@ -41,8 +41,11 @@ jobs:
           set -euo pipefail
           a=$(ls dist/*.AppImage)
           "$a" --help
-          "$a" --tool 2>&1 | grep -q 'commands supported'
-          "$a" --dolphin --version | grep -q '^Dolphin '
+          # dolphin-tool without a command prints its usage and exits 1.
+          out=$("$a" --tool 2>&1 || true); echo "$out"
+          grep -q 'commands supported' <<<"$out"
+          out=$("$a" --dolphin --version 2>&1); echo "$out"
+          grep -q '^Dolphin ' <<<"$out"
       - uses: actions/upload-artifact@v4
         with:
           name: appimage-${{ matrix.target.arch }}
