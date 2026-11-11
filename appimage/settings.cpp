@@ -141,8 +141,9 @@ int main(int argc, char **argv)
     big.setBold(true);
     title->setFont(big);
     layout->addWidget(title);
-    auto *sub = new QLabel(QObject::tr("Runs on Dolphin %1. You need your own disc image.")
-                               .arg(qEnvironmentVariable("MKDD_DOLPHIN_VERSION", "")), &window);
+    auto *sub = new QLabel(QObject::tr("Version %1, runs on Dolphin %2. You need your own disc image.")
+                               .arg(qEnvironmentVariable("MKDD_APPIMAGE_VERSION", "?"),
+                                    qEnvironmentVariable("MKDD_DOLPHIN_VERSION", "?")), &window);
     sub->setEnabled(false);
     layout->addWidget(sub);
     if (!notice.isEmpty()) {

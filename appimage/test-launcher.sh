@@ -313,6 +313,14 @@ check "Play without a disc asks only once" '[ "$(grep -c "No disc image" "$T/std
 unset STUB_WINDOW
 rm -f "$T/appdir/bin/mkdd-settings"
 
+echo "# --version"
+printf '1.2.3\n' > "$T/appdir/version"
+printf '2609a\n' > "$T/appdir/dolphin-version"
+out=$(launch --version 2>&1; cat "$T/stderr")
+check "shows both versions" '[ "$out" = "MKDD AppImage 1.2.3 (Dolphin 2609a)" ]'
+check "starts nothing" '[ ! -f "$T/args" ]'
+rm -f "$T/appdir/version" "$T/appdir/dolphin-version"
+
 echo "# CRLF line endings in an existing file"
 reset
 mkdir -p "$(dirname "$PAD_INI")"

@@ -72,6 +72,7 @@ Usage: $SELF [--no-automap] [DISC | OPTION]
   --dolphin ARGS...      plain Dolphin, ARGS go to dolphin-emu
   --tool ARGS...         dolphin-tool
   --forget               forget the remembered disc
+  --version              the AppImage and Dolphin versions
 
 Escape quits the game. Gamepads connected at start are mapped to GameCube ports
 1-4. Without one, the keyboard is port 1. A gamepad plugged in later gets the
@@ -671,6 +672,7 @@ settings_window() {
 	fi
 	code=0
 	MKDD_DOLPHIN_VERSION=$(cat "$APPDIR/dolphin-version" 2>/dev/null || true) \
+	MKDD_APPIMAGE_VERSION=$(cat "$APPDIR/version" 2>/dev/null || true) \
 		"$SETTINGS_TOOL" "$SETTINGS" "$1" || code=$?
 	case "$code" in
 		10) play "$2" "" asked ;;
@@ -726,6 +728,10 @@ case "$1" in
 		play fullscreen "$1" ;;
 	-h|--help)
 		usage
+		exit 0 ;;
+	--version)
+		printf 'MKDD AppImage %s (Dolphin %s)\n' "$(cat "$APPDIR/version" 2>/dev/null || echo unknown)" \
+			"$(cat "$APPDIR/dolphin-version" 2>/dev/null || echo unknown)"
 		exit 0 ;;
 	--pads)
 		show_pads

@@ -8,6 +8,7 @@
 # Needs: bash, curl, sha256sum, dpkg-deb, a C and C++ compiler. No root, FUSE or docker.
 #
 # Usage: appimage/build.sh
+#   The AppImage's version comes from appimage/VERSION (see appimage/README.md, Releases).
 #   ARCH=x86_64|aarch64  target, default: this machine (appimagetool runs natively)
 #   OUTDIR=...           where the AppImage goes, default: build/
 set -euo pipefail
@@ -23,6 +24,7 @@ esac
 BUILD="$ROOT/build/appimage/$ARCH"
 APPDIR="$BUILD/AppDir"
 OUTDIR="${OUTDIR:-$ROOT/build}"
+APPIMAGE_VERSION="$(tr -d '[:space:]' < "$HERE/VERSION")"
 
 # Pinned Dolphin release. Bump all three together.
 DOLPHIN_VERSION=2609a
@@ -125,6 +127,7 @@ fi
   -Wl,--unresolved-symbols=ignore-in-shared-libs
 ln -f "$APPDIR/sharun" "$APPDIR/bin/mkdd-settings"
 echo "$DOLPHIN_VERSION" > "$APPDIR/dolphin-version"
+echo "$APPIMAGE_VERSION" > "$APPDIR/version"
 
 rm -f "$APPDIR"/*.desktop "$APPDIR/.DirIcon"
 cp "$HERE/mkdd.desktop" "$APPDIR/mkdd.desktop"
@@ -135,8 +138,8 @@ cp "$HERE/mkdd.png" "$APPDIR/share/icons/hicolor/256x256/apps/mkdd.png"
 cp "$HERE/mkdd.svg" "$APPDIR/share/icons/hicolor/scalable/apps/mkdd.svg"
 
 # --- pack ----------------------------------------------------------------------
-VERSION="dolphin-$DOLPHIN_VERSION"
-OUT="$OUTDIR/MKDD-Dolphin-$DOLPHIN_VERSION-$ARCH.AppImage"
+VERSION="$APPIMAGE_VERSION"
+OUT="$OUTDIR/MKDD-Dolphin-$APPIMAGE_VERSION-$ARCH.AppImage"
 echo ">> packing $OUT"
 ARCH=$ARCH VERSION=$VERSION "$BUILD/appimagetool" --appimage-extract-and-run \
   --runtime-file "$BUILD/runtime" --no-appstream "$APPDIR" "$OUT"
