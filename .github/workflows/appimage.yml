@@ -28,8 +28,8 @@ jobs:
     runs-on: ${{ matrix.target.runner }}
     steps:
       - uses: actions/checkout@v5
-      - name: Automap tests
-        run: ./appimage/test-automap.sh
+      - name: Launcher tests
+        run: ./appimage/test-launcher.sh
       - name: Build
         env:
           ARCH: ${{ matrix.target.arch }}
@@ -51,11 +51,18 @@ jobs:
           # Runs the bundled mkdd-pads; a runner has no controllers.
           out=$("$a" --pads 2>&1); echo "$out"
           grep -q 'No controllers connected' <<<"$out"
+          # The settings window loads the bundled Qt and draws itself.
+          DISPLAY=:99 MKDD_SETTINGS_SCREENSHOT="$PWD/settings-${{ matrix.target.arch }}.png" "$a"
+          test -s "settings-${{ matrix.target.arch }}.png"
       - uses: actions/upload-artifact@v4
         with:
           name: appimage-${{ matrix.target.arch }}
           path: dist/*.AppImage
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: settings-window-${{ matrix.target.arch }}
+          path: settings-*.png
 
   release:
     needs: build
@@ -82,12 +89,15 @@ jobs:
 
           \`\`\`sh
           chmod +x MKDD-Dolphin-$version-x86_64.AppImage
-          ./MKDD-Dolphin-$version-x86_64.AppImage                  # pick your disc image, then play
+          ./MKDD-Dolphin-$version-x86_64.AppImage                  # settings window: pick your disc image, then Play
+          ./MKDD-Dolphin-$version-x86_64.AppImage --game           # straight into the game, fullscreen (Steam, Steam Deck)
           ./MKDD-Dolphin-$version-x86_64.AppImage --dol build/MarioClub_us/main.dol   # boot your decomp build
           ./MKDD-Dolphin-$version-x86_64.AppImage --pads           # show connected controllers and their ports
           \`\`\`
 
-          Gamepads connected at start are mapped to GameCube ports 1-4. Without one, the keyboard is port 1. A gamepad plugged in later gets the next free port; stop and start the game to use it. Once you change the mapping in Dolphin, it stays yours. \`--no-automap\` skips it for one run.
+          Escape quits the game. For Steam: add the AppImage as a non-Steam game with launch option \`--game\`.
+
+          Gamepads connected at start are mapped to GameCube ports 1-4. Without one, the keyboard is port 1. A gamepad plugged in later gets the next free port; quit and start the game again to use it. Once you change the mapping in Dolphin, it stays yours. \`--no-automap\` skips it for one run.
 
           Built from $GITHUB_SHA. Dolphin comes from [pkgforge-dev/Dolphin-emu-AppImage](https://github.com/pkgforge-dev/Dolphin-emu-AppImage).
           EOF
