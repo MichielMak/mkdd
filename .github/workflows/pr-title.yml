@@ -1,0 +1,24 @@
+name: PR title
+
+# Squash merges use the PR title as commit message, and git-cliff reads it to pick the
+# AppImage's next version (appimage/cliff.toml). Same check as MichielMak/flightscanner.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  pr-title:
+    # Not in doldecomp/mkdd itself, and not for PRs from forks.
+    if: github.repository != 'doldecomp/mkdd' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: PR title follows Conventional Commits
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if ! grep -Eq '^(feat|fix|perf|refactor|revert|docs|test|ci|build|chore|style)(\([a-z0-9._-]+\))?!?: .+' <<< "$TITLE"; then
+            echo "::error::PR title must follow Conventional Commits, e.g. 'feat: add a setting' or 'fix(launcher): ...'."
+            exit 1
+          fi

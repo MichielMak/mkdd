@@ -1,7 +1,14 @@
 name: AppImage
 
-# Builds the Dolphin AppImage for x86_64 and aarch64. Pushes to main publish
-# it as release "appimage-dolphin-<version>". No game data is involved.
+# Builds and tests the Dolphin AppImage for x86_64 and aarch64 on every PR and push.
+# No game data is involved. Releases work like MichielMak/flightscanner; every push
+# to main then does one of two things:
+# 1. appimage/VERSION has a version without a tag (a release PR was just merged):
+#    tag appimage-vX.Y.Z and publish the AppImages as a GitHub release.
+# 2. There are unreleased feat/fix/perf/refactor/deps commits touching the AppImage:
+#    open or update the "chore(release): appimage-vX.Y.Z" PR with the new
+#    appimage/CHANGELOG.md and appimage/VERSION.
+# Versions and the changelog come from git-cliff (appimage/cliff.toml).
 on:
   push:
     branches: [main]
@@ -12,10 +19,12 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: appimage-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a run on main halfway through publishing a release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -43,6 +52,7 @@ jobs:
           set -euo pipefail
           a=$(ls dist/*.AppImage)
           "$a" --help
+          "$a" --version | grep -qx "MKDD AppImage $(cat appimage/VERSION) (Dolphin .*)"
           # dolphin-tool without a command prints its usage and exits 1.
           out=$("$a" --tool 2>&1 || true); echo "$out"
           grep -q 'commands supported' <<<"$out"
@@ -68,47 +78,104 @@ jobs:
     needs: build
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    env:
+      CLIFF: npx -y git-cliff@2.14.2 --config appimage/cliff.toml
+      RELEASE_BRANCH: release/appimage-next
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Check for an unpublished version
+        id: version
+        run: |
+          version=$(tr -d '[:space:]' < appimage/VERSION)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if ! git rev-parse -q --verify "refs/tags/appimage-v$version" > /dev/null; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # --- 1. Publish a merged release -------------------------------------------------
       - uses: actions/download-artifact@v4
+        if: steps.version.outputs.publish == 'true'
         with:
           pattern: appimage-*
           path: dist
           merge-multiple: true
-      - name: Publish
+      - name: Tag and publish appimage-v${{ steps.version.outputs.version }}
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="appimage-v$VERSION"
+          dolphin=$(sed -n 's/^DOLPHIN_VERSION=//p' appimage/build.sh)
+          git tag -a "$tag" -m "$tag"
+          git push origin "$tag"
+          # This version's section of the changelog, without its heading.
+          awk -v v="$VERSION" '
+            /^## \[/ { if (on) exit; on = index($0, "## [" v "]") == 1; next }
+            on' appimage/CHANGELOG.md > notes.md
+          a="MKDD-Dolphin-$VERSION-x86_64.AppImage"
+          cat >> notes.md <<EOF
+
+          ---
+          Dolphin $dolphin set up to boot Mario Kart: Double Dash!!. Contains no game data: you need your own disc image.
+
+          \`\`\`sh
+          chmod +x $a
+          ./$a                  # settings window: pick your disc image, then Play
+          ./$a --game           # straight into the game, fullscreen (Steam, Steam Deck)
+          ./$a --dol build/MarioClub_us/main.dol   # boot your decomp build
+          \`\`\`
+
+          Escape quits the game. For Steam: add the AppImage as a non-Steam game with launch option \`--game\`.
+          Dolphin comes from [pkgforge-dev/Dolphin-emu-AppImage](https://github.com/pkgforge-dev/Dolphin-emu-AppImage).
+          EOF
+          cd dist
+          sha256sum *.AppImage > SHA256SUMS
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "MKDD AppImage $VERSION" \
+            --notes-file ../notes.md --verify-tag *.AppImage SHA256SUMS
+
+      # --- 2. Open or update the release PR ----------------------------------------------
+      - name: Update release PR
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          version=$(sed -n 's/^DOLPHIN_VERSION=//p' appimage/build.sh)
-          tag="appimage-dolphin-$version"
-          cd dist
-          sha256sum *.AppImage > SHA256SUMS
-          cat > notes.md <<EOF
-          Dolphin $version set up to boot Mario Kart: Double Dash!!. Contains no game data: you need your own disc image.
+          changes=$($CLIFF --unreleased --context 2>/dev/null \
+            | node -p "JSON.parse(require('fs').readFileSync(0)).flatMap((r) => r.commits).length")
+          if [ "$changes" = "0" ]; then
+            echo "Nothing to release."
+            if [ "$(gh pr view "$RELEASE_BRANCH" --json state -q .state 2>/dev/null)" = "OPEN" ]; then
+              gh pr close "$RELEASE_BRANCH" --delete-branch --comment "Nothing left to release."
+            fi
+            exit 0
+          fi
 
-          \`\`\`sh
-          chmod +x MKDD-Dolphin-$version-x86_64.AppImage
-          ./MKDD-Dolphin-$version-x86_64.AppImage                  # settings window: pick your disc image, then Play
-          ./MKDD-Dolphin-$version-x86_64.AppImage --game           # straight into the game, fullscreen (Steam, Steam Deck)
-          ./MKDD-Dolphin-$version-x86_64.AppImage --dol build/MarioClub_us/main.dol   # boot your decomp build
-          ./MKDD-Dolphin-$version-x86_64.AppImage --pads           # show connected controllers and their ports
-          \`\`\`
+          next=$($CLIFF --bumped-version 2>/dev/null)
+          version=${next#appimage-v}
+          $CLIFF --unreleased --bump --strip all 2>/dev/null > entry.md
+          git switch -C "$RELEASE_BRANCH"
+          echo "$version" > appimage/VERSION
+          # Insert the new entry above the newest release; the hand-written history stays.
+          awk 'FNR == NR { entry = entry $0 "\n"; next }
+               !done && /^## \[/ { printf "%s", entry; done = 1 }
+               { print }' entry.md appimage/CHANGELOG.md > CHANGELOG.new
+          mv CHANGELOG.new appimage/CHANGELOG.md
+          git add appimage/VERSION appimage/CHANGELOG.md
+          git commit -m "chore(release): $next"
+          git push --force origin "$RELEASE_BRANCH"
 
-          Escape quits the game. For Steam: add the AppImage as a non-Steam game with launch option \`--game\`.
-
-          Gamepads connected at start are mapped to GameCube ports 1-4. Without one, the keyboard is port 1. A gamepad plugged in later gets the next free port; quit and start the game again to use it. Once you change the mapping in Dolphin, it stays yours. \`--no-automap\` skips it for one run.
-
-          Built from $GITHUB_SHA. Dolphin comes from [pkgforge-dev/Dolphin-emu-AppImage](https://github.com/pkgforge-dev/Dolphin-emu-AppImage).
-          EOF
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            # The release is reused per Dolphin version: move its tag to this
-            # build, so the tag and source archives match the AppImages.
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" \
-              -f sha="$GITHUB_SHA" -F force=true >/dev/null
-            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber *.AppImage SHA256SUMS
-            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          cp entry.md body.md
+          printf '\n---\nMerging this PR tags `%s` and publishes the AppImages as a GitHub release.\n' "$next" >> body.md
+          if [ "$(gh pr view "$RELEASE_BRANCH" --json state -q .state 2>/dev/null)" = "OPEN" ]; then
+            gh pr edit "$RELEASE_BRANCH" --title "chore(release): $next" --body-file body.md
           else
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "MKDD Dolphin AppImage ($version)" \
-              --notes-file notes.md --target "$GITHUB_SHA" *.AppImage SHA256SUMS
+            gh pr create --base main --head "$RELEASE_BRANCH" --title "chore(release): $next" --body-file body.md
           fi

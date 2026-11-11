@@ -1,0 +1,52 @@
+# git-cliff config for the AppImage: turns Conventional Commits into appimage/CHANGELOG.md and
+# decides the next version. Same scheme as MichielMak/flightscanner. https://git-cliff.org/docs/configuration
+#
+# Only commits that touch appimage/ or its workflow count, so the decomp's own history stays out.
+# Tags are appimage-vX.Y.Z, so they cannot clash with tags from upstream doldecomp/mkdd.
+
+[changelog]
+# New releases are prepended (--prepend), so the hand-written 1.0.0 entry stays.
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="appimage-v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | split(pat="\n") | first | upper_first | trim }}\
+{% if commit.breaking %} (**breaking**){% endif %}\
+{% endfor %}
+{% endfor %}\n
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+include_paths = ["appimage/**", ".github/workflows/appimage.yml"]
+# Squash merges end the title with "(#123)": turn that into a link to the PR.
+commit_preprocessors = [
+  { pattern = '\(#([0-9]+)\)', replace = "([#${1}](https://github.com/MichielMak/mkdd/pull/${1}))" },
+]
+# Commits that end up in the changelog are the ones that trigger a release.
+commit_parsers = [
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^(chore|build|ci|fix)\\(deps", group = "<!-- 4 -->Dependencies" },
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Bug fixes" },
+  { message = "^perf", group = "<!-- 2 -->Performance" },
+  { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+  { message = "^revert", group = "<!-- 5 -->Reverts" },
+  # docs, ci, test, style and other chores don't change the AppImage, so no release
+  { message = ".*", skip = true },
+]
+protect_breaking_commits = true
+tag_pattern = "^appimage-v[0-9]+\\.[0-9]+\\.[0-9]+$"
+sort_commits = "oldest"
+
+[bump]
+features_always_bump_minor = true
+breaking_always_bump_major = true
+initial_tag = "appimage-v1.0.0"

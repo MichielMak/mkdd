@@ -144,7 +144,33 @@ The decomp currently matches the debug build (`MarioClub_us`), so use that disc 
 
 To update Dolphin, change `DOLPHIN_VERSION`, `DOLPHIN_TAG` and both `DOLPHIN_SHA256` values in `build.sh`.
 
+## Releases
+
+The AppImage has its own version in `appimage/VERSION`, released as tag `appimage-vX.Y.Z` with files named
+`MKDD-Dolphin-X.Y.Z-<arch>.AppImage`. `--version` and the settings window show it. It works like
+[flightscanner](https://github.com/MichielMak/flightscanner): versions and `appimage/CHANGELOG.md` are generated
+by [git-cliff](https://git-cliff.org) from [Conventional Commits](https://www.conventionalcommits.org)
+(config: `appimage/cliff.toml`).
+
+1. Merge PRs into `main` with squash merge. PR titles must be conventional (`feat: …`, `fix(launcher): …`); the
+   PR title workflow checks this.
+2. The AppImage workflow keeps a PR called `chore(release): appimage-vX.Y.Z` up to date with the changelog and
+   version. `feat` bumps the minor version, `fix`/`perf`/`refactor`/`deps` the patch version. `docs`, `ci`,
+   `test` and other chores don't trigger a release. Only commits that touch `appimage/` or its workflow count,
+   so decomp work never releases an AppImage.
+3. Merge the release PR when you want to ship. The workflow tags `appimage-vX.Y.Z` and publishes the AppImages
+   and `SHA256SUMS` as a GitHub release, with the changelog entry as release notes.
+
+Every other merge only builds and tests; nothing is replaced. Preview the next release locally:
+
+```sh
+npx git-cliff@2.14.2 --config appimage/cliff.toml --unreleased --bump
+```
+
+The release PR is opened by GitHub Actions, so CI doesn't run on it. That's fine: it only changes
+`appimage/CHANGELOG.md` and `appimage/VERSION`, and the build runs again once it is merged.
+
 ## CI
 
-`.github/workflows/appimage.yml` builds x86_64 and aarch64 when `appimage/` changes, and runs a smoke test.
-On `main` it publishes the AppImages as release `appimage-dolphin-<version>`.
+`.github/workflows/appimage.yml` builds x86_64 and aarch64 when `appimage/` changes, runs the launcher tests and
+a smoke test, and handles releases as described above.
