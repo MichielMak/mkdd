@@ -6,13 +6,18 @@
 #   MKDD.AppImage                    boot the remembered disc (asks for one the first time)
 #   MKDD.AppImage DISC               boot DISC and remember it
 #   MKDD.AppImage --dol [DOL] [DISC] boot a main.dol built by this decomp, with DISC's files
+#   MKDD.AppImage --pads             show connected controllers and their ports
 #   MKDD.AppImage --dolphin ARGS...  plain Dolphin
 #   MKDD.AppImage --tool ARGS...     dolphin-tool
 #   MKDD.AppImage --forget           forget the remembered disc
 #   MKDD.AppImage --help
+#
+# Before a game boots, connected gamepads are mapped to GameCube ports 1-4
+# (see automap below). --no-automap or MKDD_AUTOMAP=0 skips that.
 set -e
 
 DOLPHIN="$APPDIR/AppRun.dolphin.sh"
+PADS_TOOL="$APPDIR/bin/mkdd-pads"
 # Dolphin's hooks read this. Its own uruntime set it; the type2 runtime does not.
 : "${APPIMAGE_ARCH:=$(uname -m)}"
 export APPIMAGE_ARCH
@@ -24,26 +29,47 @@ DEFAULT_DOL="build/MarioClub_us/main.dol"
 SELF="${APPIMAGE##*/}"
 SELF="${SELF:-MKDD.AppImage}"
 
+# Dolphin's config folder, picked the way Dolphin does (UICommon::SetUserDirectory).
+if [ -n "$DOLPHIN_EMU_USERPATH" ]; then
+	DOLPHIN_CONFIG="$DOLPHIN_EMU_USERPATH/Config"
+elif [ -d "$HOME/.dolphin-emu" ]; then
+	DOLPHIN_CONFIG="$HOME/.dolphin-emu/Config"
+else
+	DOLPHIN_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/dolphin-emu"
+fi
+PAD_INI="$DOLPHIN_CONFIG/GCPadNew.ini"
+MAIN_INI="$DOLPHIN_CONFIG/Dolphin.ini"
+# What automap last wrote, and the GCPadNew.ini it replaced.
+WRITTEN_INI="$CONFIG_DIR/GCPadNew.written.ini"
+BACKUP_INI="$CONFIG_DIR/GCPadNew.backup.ini"
+
 say() { printf '%s\n' "$*" >&2; }
 
 usage() {
 	cat <<EOF
 Mario Kart: Double Dash!! on Dolphin. You supply your own disc image.
 
-Usage: $SELF [DISC | OPTION]
+Usage: $SELF [--no-automap] [DISC | OPTION]
 
   (no argument)          boot the remembered disc (asks for one the first time)
   DISC                   boot DISC (ISO, RVZ, GCZ, CISO, WIA, ...) and remember it
   --dol [DOL] [DISC]     boot a main.dol built by the decomp (default: $DEFAULT_DOL)
                          with the game files of DISC (default: the remembered disc)
+  --pads                 show connected controllers and the ports they get
+  --no-automap           leave Dolphin's controller mapping alone for this run
   --dolphin ARGS...      plain Dolphin, ARGS go to dolphin-emu
   --tool ARGS...         dolphin-tool
   --forget               forget the remembered disc
 
+Gamepads connected at start are mapped to GameCube ports 1-4. Without one, the
+keyboard is port 1. Once you change the mapping in Dolphin, it stays yours.
+
 Remembered disc: $DISC_FILE
-Dolphin settings and saves: ~/.local/share/dolphin-emu, the same as an installed Dolphin.
+Dolphin settings: $DOLPHIN_CONFIG
 EOF
 }
+
+# --- disc handling ---------------------------------------------------------------
 
 # Ask for a disc image with a host file picker. Prints the path, or nothing.
 pick_disc() {
@@ -108,9 +134,270 @@ extract_disc() {
 	dirname "$(dirname "$main")"
 }
 
+# --- controller automap ------------------------------------------------------------
+#
+# Dolphin binds a mapping to one device by name ("SDL/0/Xbox Series X Controller"),
+# so a fixed config only works for the controller it was made with. Before each
+# boot, mkdd-pads lists the connected controllers with the names Dolphin's SDL
+# backend will give them, and pad N gets GameCube port N in GCPadNew.ini.
+#
+# Only the keys below are written; everything else in the file stays. A copy of
+# what was written goes to WRITTEN_INI. Dolphin rewrites GCPadNew.ini at every
+# start, so a marker comment would not survive. Instead, the next launch compares
+# the file against that copy: if any written key differs, the user remapped in
+# Dolphin and automap leaves the file alone from then on.
+#
+# A GCPadNew.ini that automap did not write is only taken over when it maps no
+# gamepad at all (Dolphin's keyboard defaults); it is kept in BACKUP_INI and put
+# back when no gamepad is connected, so the keyboard works again.
+
+# ini_get FILE SECTION KEY: print the value, or nothing.
+ini_get() {
+	[ -f "$1" ] || return 0
+	awk -v s="[$2]" -v k="$3" '
+		{ sub(/\r$/, "") }
+		/^\[/ { in_s = ($0 == s); next }
+		in_s && (i = index($0, "=")) {
+			key = substr($0, 1, i - 1); sub(/[ \t]+$/, "", key)
+			if (key == k) { v = substr($0, i + 1); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v); print v; exit }
+		}' "$1"
+}
+
+# ini_pairs FILE SECTION: print "key=value" lines of SECTION.
+ini_pairs() {
+	[ -f "$1" ] || return 0
+	awk -v s="[$2]" '
+		{ sub(/\r$/, "") }
+		/^\[/ { in_s = ($0 == s); next }
+		in_s && (i = index($0, "=")) {
+			key = substr($0, 1, i - 1); sub(/[ \t]+$/, "", key)
+			v = substr($0, i + 1); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+			print key "=" v
+		}' "$1"
+}
+
+# ini_contains WANT HAVE: true when every key of WANT has the same value in HAVE.
+ini_contains() {
+	awk '
+		{ sub(/\r$/, "") }
+		/^\[/ { sec = $0; next }
+		(i = index($0, "=")) {
+			key = substr($0, 1, i - 1); sub(/[ \t]+$/, "", key)
+			v = substr($0, i + 1); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+			if (FILENAME == ARGV[1]) want[sec SUBSEP key] = v
+			else have[sec SUBSEP key] = v
+		}
+		END { for (k in want) if (!(k in have) || have[k] != want[k]) exit 1 }' "$1" "$2"
+}
+
+# ini_merge NEW CURRENT: print CURRENT with every key of NEW set to its NEW value.
+ini_merge() {
+	awk '
+		function flush(   j) {
+			if (cur == "" || !(cur in nkeys)) return
+			for (j = 1; j <= nkeys[cur]; j++)
+				if (!done[cur SUBSEP j]) print order[cur SUBSEP j] " = " val[cur SUBSEP order[cur SUBSEP j]]
+			seen[cur] = 1
+		}
+		{ sub(/\r$/, "") }
+		FILENAME == ARGV[1] {
+			if (/^\[/) { sec = $0; if (!(sec in nkeys)) { nkeys[sec] = 0; secs[++nsecs] = sec } ; next }
+			if ((i = index($0, "="))) {
+				key = substr($0, 1, i - 1); sub(/[ \t]+$/, "", key)
+				v = substr($0, i + 1); sub(/^[ \t]+/, "", v)
+				order[sec SUBSEP (++nkeys[sec])] = key; pos[sec SUBSEP key] = nkeys[sec]; val[sec SUBSEP key] = v
+			}
+			next
+		}
+		/^\[/ { flush(); cur = $0; print; next }
+		(i = index($0, "=")) && (cur in nkeys) {
+			key = substr($0, 1, i - 1); sub(/[ \t]+$/, "", key)
+			if ((cur SUBSEP key) in pos) {
+				if (!done[cur SUBSEP pos[cur SUBSEP key]]) print key " = " val[cur SUBSEP key]
+				done[cur SUBSEP pos[cur SUBSEP key]] = 1
+				next
+			}
+		}
+		{ print }
+		END {
+			flush()
+			for (s = 1; s <= nsecs; s++) {
+				if (secs[s] in seen) continue
+				print secs[s]
+				for (j = 1; j <= nkeys[secs[s]]; j++) print order[secs[s] SUBSEP j] " = " val[secs[s] SUBSEP order[secs[s] SUBSEP j]]
+			}
+		}' "$1" "$2"
+}
+
+# Connected controllers as "<id>\t<gamepad>\t<name>". MKDD_PADS replaces the
+# detection (for testing), in the same format. Fails when detection fails.
+list_pads() {
+	if [ -n "${MKDD_PADS+x}" ]; then
+		[ -n "$MKDD_PADS" ] && printf '%s\n' "$MKDD_PADS"
+		return 0
+	fi
+	[ -x "$PADS_TOOL" ] || return 1
+	# Dolphin's own SDL hints, so names come out the same.
+	hints=$(ini_pairs "$MAIN_INI" SDL_Hints | tr '\n' ' ')
+	# shellcheck disable=SC2086
+	if command -v timeout >/dev/null 2>&1; then
+		timeout 10 "$PADS_TOOL" $hints 2>/dev/null
+	else
+		"$PADS_TOOL" $hints 2>/dev/null
+	fi
+}
+
+# The gamepads that get a port: up to 4, as "<id>\t<name>".
+port_pads() {
+	printf '%s\n' "$1" | awk -F '\t' 'NF >= 3 && $2 == 1 && n < 4 { n++; print $1 "\t" $3 }'
+}
+
+# GCPadNew.ini section for one port. GameCube buttons go by position:
+# A is the bottom face button, B the left one.
+pad_section() {
+	cat <<EOF
+[GCPad$1]
+Device = SDL/$2
+Buttons/A = \`Button S\`
+Buttons/B = \`Button W\`
+Buttons/X = \`Button E\`
+Buttons/Y = \`Button N\`
+Buttons/Z = \`Shoulder R\`
+Buttons/Start = \`Start\`
+Main Stick/Up = \`Left Y+\`
+Main Stick/Down = \`Left Y-\`
+Main Stick/Left = \`Left X-\`
+Main Stick/Right = \`Left X+\`
+C-Stick/Up = \`Right Y+\`
+C-Stick/Down = \`Right Y-\`
+C-Stick/Left = \`Right X-\`
+C-Stick/Right = \`Right X+\`
+Triggers/L = \`Trigger L\`
+Triggers/R = \`Trigger R\`
+Triggers/L-Analog = \`Trigger L\`
+Triggers/R-Analog = \`Trigger R\`
+D-Pad/Up = \`Pad N\`
+D-Pad/Down = \`Pad S\`
+D-Pad/Left = \`Pad W\`
+D-Pad/Right = \`Pad E\`
+Rumble/Motor = \`Motor\`
+EOF
+}
+
+# Who owns GCPadNew.ini. Prints: absent, automap, adoptable, adapter or user.
+pad_ini_owner() {
+	for i in 0 1 2 3; do
+		# 12 = SIDEVICE_WIIU_ADAPTER: Dolphin drives the GameCube adapter itself.
+		[ "$(ini_get "$MAIN_INI" Core "SIDevice$i")" = 12 ] && { echo adapter; return; }
+	done
+	if [ ! -f "$PAD_INI" ]; then
+		echo absent
+	elif [ -f "$WRITTEN_INI" ]; then
+		if ini_contains "$WRITTEN_INI" "$PAD_INI"; then echo automap; else echo user; fi
+	elif grep -qE '^Device *= *(SDL|evdev)/' "$PAD_INI"; then
+		# The user mapped a controller themselves.
+		echo user
+	else
+		# Keyboard only, which is Dolphin's default.
+		echo adoptable
+	fi
+}
+
+# Map connected gamepads to ports. Sets AUTOMAP_ARGS (extra dolphin-emu arguments).
+AUTOMAP_ARGS=
+automap() {
+	[ "${MKDD_AUTOMAP:-1}" = 0 ] && return 0
+	owner=$(pad_ini_owner)
+	case "$owner" in
+		adapter|user) return 0 ;;
+	esac
+	pads=$(list_pads) || { say "Controller detection failed; leaving the mapping alone."; return 0; }
+	ports=$(port_pads "$pads")
+
+	if [ -z "$ports" ]; then
+		# No gamepad: give the keyboard back if automap had taken over.
+		if [ "$owner" = automap ]; then
+			if [ -f "$BACKUP_INI" ]; then mv -f "$BACKUP_INI" "$PAD_INI"; else rm -f "$PAD_INI"; fi
+			rm -f "$WRITTEN_INI"
+		fi
+		say "No gamepad found; port 1 uses Dolphin's keyboard mapping."
+		return 0
+	fi
+
+	mkdir -p "$CONFIG_DIR" "$DOLPHIN_CONFIG"
+	[ "$owner" = adoptable ] && cp -f "$PAD_INI" "$BACKUP_INI"
+	new="$CONFIG_DIR/GCPadNew.new.ini"
+	: > "$new"
+	port=0
+	printf '%s\n' "$ports" | while IFS="$(printf '\t')" read -r id name; do
+		port=$((port + 1))
+		pad_section "$port" "$id/$name" >> "$new"
+	done
+	if [ -f "$PAD_INI" ]; then
+		ini_merge "$new" "$PAD_INI" > "$PAD_INI.mkdd-tmp"
+	else
+		cp "$new" "$PAD_INI.mkdd-tmp"
+	fi
+	mv -f "$PAD_INI.mkdd-tmp" "$PAD_INI"
+	mv -f "$new" "$WRITTEN_INI"
+
+	port=0
+	printf '%s\n' "$ports" | while IFS="$(printf '\t')" read -r id name; do
+		port=$((port + 1))
+		say "Port $port: $name"
+	done
+	# Turn on ports 2-4 for this run only (-C is not saved), unless the user set them up.
+	n=$(printf '%s\n' "$ports" | wc -l)
+	k=1
+	while [ "$k" -lt "$n" ]; do
+		cur=$(ini_get "$MAIN_INI" Core "SIDevice$k")
+		if [ -z "$cur" ] || [ "$cur" = 0 ]; then
+			AUTOMAP_ARGS="$AUTOMAP_ARGS -C Dolphin.Core.SIDevice$k=6"
+		fi
+		k=$((k + 1))
+	done
+}
+
+show_pads() {
+	pads=$(list_pads) || { say "Controller detection failed."; exit 1; }
+	if [ -z "$pads" ]; then
+		echo "No controllers connected."
+	else
+		port=0
+		printf '%s\n' "$pads" | while IFS="$(printf '\t')" read -r id gamepad name; do
+			if [ "$gamepad" = 1 ] && [ "$port" -lt 4 ]; then
+				port=$((port + 1))
+				echo "Port $port: SDL/$id/$name"
+			else
+				echo "No port: SDL/$id/$name (not a gamepad SDL knows)"
+			fi
+		done
+	fi
+	case "$(pad_ini_owner)" in
+		adapter) echo "Mapping: left alone, Dolphin uses the GameCube adapter." ;;
+		user) echo "Mapping: yours, automap leaves $PAD_INI alone." ;;
+		*)
+			if [ -n "$(port_pads "$pads")" ]; then
+				echo "Mapping: automap writes $PAD_INI at the next boot."
+			else
+				echo "Mapping: Dolphin's keyboard mapping on port 1 (no gamepad)."
+			fi ;;
+	esac
+}
+
+# --- main ----------------------------------------------------------------------
+
+if [ "$1" = --no-automap ]; then
+	MKDD_AUTOMAP=0
+	shift
+fi
+
 case "$1" in
 	-h|--help)
 		usage
+		exit 0 ;;
+	--pads)
+		show_pads
 		exit 0 ;;
 	--dolphin)
 		shift
@@ -132,12 +419,16 @@ case "$1" in
 		root=$(extract_disc "$disc")
 		# Dolphin boots <root>/sys/main.dol as a full disc, with <root>/files as its files.
 		cp -f "$dol" "$root/sys/main.dol"
+		automap
 		say "Booting $dol with the files of $disc"
-		exec "$DOLPHIN" dolphin-emu -e "$root/sys/main.dol" ;;
+		# shellcheck disable=SC2086
+		exec "$DOLPHIN" dolphin-emu $AUTOMAP_ARGS -e "$root/sys/main.dol" ;;
 	-*)
 		usage >&2
 		exit 1 ;;
 esac
 
 disc=$(need_disc "$1")
-exec "$DOLPHIN" dolphin-emu -e "$disc"
+automap
+# shellcheck disable=SC2086
+exec "$DOLPHIN" dolphin-emu $AUTOMAP_ARGS -e "$disc"
