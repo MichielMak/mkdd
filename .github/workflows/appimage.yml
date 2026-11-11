@@ -1,0 +1,92 @@
+name: AppImage
+
+# Builds the Dolphin AppImage for x86_64 and aarch64. Pushes to main publish
+# it as release "appimage-dolphin-<version>". No game data is involved.
+on:
+  push:
+    branches: [main]
+    paths: ["appimage/**", ".github/workflows/appimage.yml"]
+  pull_request:
+    paths: ["appimage/**", ".github/workflows/appimage.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.target.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build
+        env:
+          ARCH: ${{ matrix.target.arch }}
+          OUTDIR: dist
+        run: ./appimage/build.sh
+      - name: Smoke test
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          a=$(ls dist/*.AppImage)
+          "$a" --help
+          # dolphin-tool without a command prints its usage and exits 1.
+          out=$("$a" --tool 2>&1 || true); echo "$out"
+          grep -q 'commands supported' <<<"$out"
+          out=$("$a" --dolphin --version 2>&1); echo "$out"
+          grep -q '^Dolphin ' <<<"$out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage-${{ matrix.target.arch }}
+          path: dist/*.AppImage
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: appimage-*
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^DOLPHIN_VERSION=//p' appimage/build.sh)
+          tag="appimage-dolphin-$version"
+          cd dist
+          sha256sum *.AppImage > SHA256SUMS
+          cat > notes.md <<EOF
+          Dolphin $version set up to boot Mario Kart: Double Dash!!. Contains no game data: you need your own disc image.
+
+          \`\`\`sh
+          chmod +x MKDD-Dolphin-$version-x86_64.AppImage
+          ./MKDD-Dolphin-$version-x86_64.AppImage                  # pick your disc image, then play
+          ./MKDD-Dolphin-$version-x86_64.AppImage --dol build/MarioClub_us/main.dol   # boot your decomp build
+          \`\`\`
+
+          Built from $GITHUB_SHA. Dolphin comes from [pkgforge-dev/Dolphin-emu-AppImage](https://github.com/pkgforge-dev/Dolphin-emu-AppImage).
+          EOF
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber *.AppImage SHA256SUMS
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "MKDD Dolphin AppImage ($version)" \
+              --notes-file notes.md --target "$GITHUB_SHA" *.AppImage SHA256SUMS
+          fi

@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=Mario Kart: Double Dash!! (Dolphin)
+Comment=Dolphin set up to boot Mario Kart: Double Dash!! (needs your own disc image)
+Exec=AppRun %f
+Icon=mkdd
+Categories=Game;Emulator;
+Terminal=false
+StartupWMClass=dolphin-emu
+Actions=Dolphin;Forget;
+
+[Desktop Action Dolphin]
+Name=Open Dolphin
+Exec=AppRun --dolphin
+
+[Desktop Action Forget]
+Name=Forget disc image
+Exec=AppRun --forget

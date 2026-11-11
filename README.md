@@ -85,6 +85,12 @@ Building
   ninja
   ```
 
+Linux AppImage
+==============
+
+`appimage/` builds an AppImage with Dolphin set up to boot the game, or your own build with `--dol`.
+See [appimage/README.md](appimage/README.md).
+
 Diffing
 =======
 
