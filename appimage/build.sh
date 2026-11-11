@@ -88,8 +88,10 @@ rm -f "$APPDIR/bin/10-self-updater.hook"
 # libSDL3 and runs through sharun (bin/<name> is sharun, shared/bin/<name> the
 # real binary), so it sees the same controller names as Dolphin.
 [ -e "$APPDIR/shared/lib/libSDL3.so.0" ] || { echo "Dolphin AppImage has no libSDL3.so.0" >&2; exit 1; }
+# The library goes in by path, not -L: that folder also holds the bundled
+# libc.so, which must not replace the host's at link time.
 "${CC:-cc}" -O2 -Wall -Wextra -o "$APPDIR/shared/bin/mkdd-pads" "$HERE/pads.c" \
-  -L"$APPDIR/shared/lib" -l:libSDL3.so.0 -Wl,--unresolved-symbols=ignore-in-shared-libs
+  "$APPDIR/shared/lib/libSDL3.so.0" -Wl,--unresolved-symbols=ignore-in-shared-libs
 ln -f "$APPDIR/sharun" "$APPDIR/bin/mkdd-pads"
 
 rm -f "$APPDIR"/*.desktop "$APPDIR/.DirIcon"
