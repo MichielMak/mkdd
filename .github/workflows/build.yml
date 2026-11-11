@@ -6,6 +6,8 @@ on:
 
 jobs:
   build:
+    # The build container holds the game files and is private to doldecomp.
+    if: github.repository == 'doldecomp/mkdd'
     container: ghcr.io/doldecomp/mkdd-build:main
 
     runs-on: ubuntu-latest
