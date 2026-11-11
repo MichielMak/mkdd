@@ -28,6 +28,8 @@ jobs:
     runs-on: ${{ matrix.target.runner }}
     steps:
       - uses: actions/checkout@v5
+      - name: Automap tests
+        run: ./appimage/test-automap.sh
       - name: Build
         env:
           ARCH: ${{ matrix.target.arch }}
@@ -46,6 +48,9 @@ jobs:
           grep -q 'commands supported' <<<"$out"
           out=$("$a" --dolphin --version 2>&1); echo "$out"
           grep -q '^Dolphin ' <<<"$out"
+          # Runs the bundled mkdd-pads; a runner has no controllers.
+          out=$("$a" --pads 2>&1); echo "$out"
+          grep -q 'No controllers connected' <<<"$out"
       - uses: actions/upload-artifact@v4
         with:
           name: appimage-${{ matrix.target.arch }}

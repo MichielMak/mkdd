@@ -5,7 +5,7 @@
 # unpacks it, puts appimage/AppRun.sh in front of Dolphin's own launcher and
 # packs it again. No game data goes in: the user picks a disc image at runtime.
 #
-# Needs: bash, curl, sha256sum. No root, FUSE or docker.
+# Needs: bash, curl, sha256sum, a C compiler. No root, FUSE or docker.
 #
 # Usage: appimage/build.sh
 #   ARCH=x86_64|aarch64  target, default: this machine (appimagetool runs natively)
@@ -83,6 +83,16 @@ mv "$APPDIR/AppRun.sh" "$APPDIR/AppRun.dolphin.sh"
 install -m755 "$HERE/AppRun.sh" "$APPDIR/AppRun.sh"
 # The self-updater would replace this AppImage with plain Dolphin.
 rm -f "$APPDIR/bin/10-self-updater.hook"
+
+# mkdd-pads lists controllers for the launcher's automap. It links the bundled
+# libSDL3 and runs through sharun (bin/<name> is sharun, shared/bin/<name> the
+# real binary), so it sees the same controller names as Dolphin.
+[ -e "$APPDIR/shared/lib/libSDL3.so.0" ] || { echo "Dolphin AppImage has no libSDL3.so.0" >&2; exit 1; }
+# The library goes in by path, not -L: that folder also holds the bundled
+# libc.so, which must not replace the host's at link time.
+"${CC:-cc}" -O2 -Wall -Wextra -o "$APPDIR/shared/bin/mkdd-pads" "$HERE/pads.c" \
+  "$APPDIR/shared/lib/libSDL3.so.0" -Wl,--unresolved-symbols=ignore-in-shared-libs
+ln -f "$APPDIR/sharun" "$APPDIR/bin/mkdd-pads"
 
 rm -f "$APPDIR"/*.desktop "$APPDIR/.DirIcon"
 cp "$HERE/mkdd.desktop" "$APPDIR/mkdd.desktop"

@@ -12,7 +12,8 @@ appimage/build.sh                 # for this machine's arch, result in build/
 ARCH=aarch64 appimage/build.sh    # must run on an aarch64 machine
 ```
 
-Needs `bash`, `curl` and `sha256sum`. No root, FUSE or docker.
+Needs `bash`, `curl`, `sha256sum` and a C compiler. No root, FUSE or docker.
+`appimage/test-automap.sh` tests the controller automap without Dolphin or a controller.
 
 ## Use
 
@@ -21,13 +22,49 @@ Needs `bash`, `curl` and `sha256sum`. No root, FUSE or docker.
 ./MKDD-Dolphin-*.AppImage ~/games/mkdd.rvz       # boot this disc image and remember it
 ./MKDD-Dolphin-*.AppImage --dol                  # boot build/MarioClub_us/main.dol (run from the repo root)
 ./MKDD-Dolphin-*.AppImage --dol path/main.dol path/disc.iso
-./MKDD-Dolphin-*.AppImage --dolphin              # plain Dolphin, e.g. to set up controllers
+./MKDD-Dolphin-*.AppImage --pads                 # connected controllers and the ports they get
+./MKDD-Dolphin-*.AppImage --dolphin              # plain Dolphin, e.g. to change controls
 ./MKDD-Dolphin-*.AppImage --help
 ```
 
 - The disc picker uses `zenity` or `kdialog` if the host has one. Without either, pass the path.
 - Remembered disc: `~/.config/mkdd-appimage/disc`. Forget it with `--forget`.
-- Dolphin settings and saves are in `~/.local/share/dolphin-emu`, the same place an installed Dolphin uses.
+- Dolphin uses the same folders as an installed Dolphin: settings in `~/.config/dolphin-emu`,
+  saves in `~/.local/share/dolphin-emu`.
+
+## Controllers
+
+Gamepads connected when you start a game are mapped automatically: the first one to GameCube port 1,
+the next to port 2, up to 4. That gives local multiplayer with no setup. Without a gamepad, the keyboard
+is port 1 (Dolphin's default keys).
+
+| GameCube | Gamepad |
+|---|---|
+| A, B, X, Y | bottom, left, right, top face button (GameCube positions) |
+| Z | right shoulder (RB / R1) |
+| L, R | left and right trigger, analog |
+| Control stick, C stick | left stick, right stick |
+| D-pad, Start | D-pad, Start |
+
+Plug a gamepad in before starting. One plugged in during a game is mapped at the next start.
+
+The mapping stays yours once you change it: remap anything in `--dolphin`, Controllers, and automap leaves
+`GCPadNew.ini` alone from then on. It also leaves alone a mapping you had made before, and does nothing when
+port setup uses Dolphin's GameCube adapter support. `--no-automap` (or `MKDD_AUTOMAP=0`) skips it for one run.
+
+How it works:
+
+1. Dolphin ties a mapping to one device name, such as `SDL/0/Xbox Series X Controller`, so a fixed config only
+   works for the controller it was made with.
+2. `mkdd-pads` (`appimage/pads.c`) uses the AppImage's own SDL3 with Dolphin's SDL hints, so it lists controllers
+   under exactly the names Dolphin will give them.
+3. The launcher writes one `[GCPadN]` section per gamepad into Dolphin's `GCPadNew.ini`, changing only those keys.
+   Ports 2-4 are turned on with `-C Dolphin.Core.SIDeviceN=6`, which lasts for that run only.
+4. Dolphin rewrites `GCPadNew.ini` at every start, so a marker comment would not survive. The launcher keeps a copy
+   of what it wrote in `~/.config/mkdd-appimage/GCPadNew.written.ini`. If any of those keys differ next time, you
+   remapped, and automap stops.
+5. A keyboard-only `GCPadNew.ini` (Dolphin's default) is backed up before the first write and put back when no
+   gamepad is connected.
 
 ## How `--dol` works
 
