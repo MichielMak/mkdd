@@ -25,6 +25,7 @@ a display or a controller.
 ./MKDD-Dolphin-*.AppImage --dol                  # boot build/MarioClub_us/main.dol (run from the repo root)
 ./MKDD-Dolphin-*.AppImage --dol path/main.dol path/disc.iso
 ./MKDD-Dolphin-*.AppImage --pads                 # connected controllers and the ports they get
+./MKDD-Dolphin-*.AppImage --textures             # texture packs and which ones the game loads
 ./MKDD-Dolphin-*.AppImage --dolphin              # plain Dolphin, e.g. to change controls
 ./MKDD-Dolphin-*.AppImage --help
 ```
@@ -54,6 +55,9 @@ need, press Play. **Open Dolphin** opens Dolphin's full interface for everything
 | VSync | `Hardware.VSync` |
 | Widescreen | `Settings.wideScreenHack` with a 16:9 aspect ratio |
 | Volume | `DSP.Volume` |
+| Use texture packs, Pack | `Settings.HiresTextures`, and the packs below |
+| Load all pack textures at the start | `Settings.CacheHiresTextures` |
+| Save the game's textures | `Settings.DumpTextures`, to Dolphin's `Dump/Textures/<game id>/` |
 | Map gamepads automatically | the controller automap below |
 
 The choices are stored in `~/.config/mkdd-appimage/settings.ini` and passed to Dolphin with `-C` for that run
@@ -64,6 +68,37 @@ only. Dolphin's own settings, which an installed Dolphin shares, never change. `
 Add the AppImage as a non-Steam game and set its launch options to `--game`. It then starts straight into
 the game in fullscreen and ends when you quit the game (Escape, or Steam's own Exit game). Pick the disc once
 in the settings window first, in desktop mode; if no disc is set, `--game` shows the window to ask for one.
+
+## Texture packs
+
+Put each texture pack in its own folder in `~/.local/share/mkdd-appimage/texture-packs/` (**Open packs folder**
+in the settings window). A pack is a folder of Dolphin custom textures: PNG or DDS files named `tex1_…`, in any
+subfolders. Most packs made for Dolphin work as they are: use the folder that would go in `Load/Textures/GM4E01/`.
+
+- **Pack** picks one pack, or all of them. With all packs, where two packs replace the same texture, the first
+  by folder name wins. The list updates when you come back to the window after copying a pack in.
+- **Load all pack textures at the start** avoids a stutter the first time a texture shows, but needs memory
+  for the whole pack.
+- **Save the game's textures** writes every texture the game loads to Dolphin's `Dump/Textures/<game id>/`
+  (**Open dumps folder**). Edit those PNGs and put them in a pack folder to make your own.
+
+This follows the texture packs of the Super Mario Strikers port in [strikers-appimage](https://github.com/MichielMak/strikers-appimage):
+a folder per pack, all packs or one of them, and texture dumps to make new ones.
+
+How it works:
+
+1. Dolphin loads textures from `Load/Textures/<game id>/` and everything below it, or from `Load/Textures/GM4/`
+   when there is no folder for the exact id. It has no way to pick one pack.
+2. So for each run the launcher builds a Load folder of its own in `~/.cache/mkdd-appimage/load/` and passes it
+   with `-C Dolphin.General.LoadPath`. In it, `Textures/<game id>` is a link to the packs folder, or to the one
+   pack. The game id comes from `dolphin-tool header`, so the USA, European and Japanese discs all work.
+3. Everything else in Dolphin's Load folder (graphics mods, Riivolution, other games' textures) is linked in
+   unchanged, also from a custom Load path in `Dolphin.ini`. Only Dolphin's own `Load/Textures/<game id>/` is
+   left out, because the packs take its place. Nothing is copied.
+4. With no packs in the packs folder, the Load folder is not changed, and Dolphin's own `Load/Textures/GM4E01/`
+   works as before. With texture packs off, Dolphin loads none.
+5. Dolphin does not follow links inside a texture folder, so a pack must be a real folder. The packs folder
+   itself may be a link, for example to another disk.
 
 ## Controllers
 

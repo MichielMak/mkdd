@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests for the launcher (AppRun.sh): settings, --game and the controller
-# automap. Dolphin and the settings window are replaced by stubs that record
+# Tests for the launcher (AppRun.sh): settings, --game, texture packs and the
+# controller automap. Dolphin and the settings window are replaced by stubs that record
 # their arguments, and MKDD_PADS stands in for connected controllers.
 #
 # Usage: appimage/test-launcher.sh
@@ -13,6 +13,10 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/appdir"
 cat > "$T/appdir/AppRun.dolphin.sh" <<'EOF'
 #!/bin/sh
+if [ "$1" = dolphin-tool ] && [ "$2" = header ]; then
+  [ -n "$STUB_GAME_ID" ] && printf 'Internal Name: MARIOKART\nGame ID: %s\n' "$STUB_GAME_ID"
+  exit 0
+fi
 printf '%s\n' "$@" > "$STUB_OUT"
 EOF
 chmod +x "$T/appdir/AppRun.dolphin.sh"
@@ -33,7 +37,7 @@ run() {
 # is passed in as SHOW_DISPLAY.
 launch() {
   rm -f "$T/args" "$T/window"
-  env -u XDG_CONFIG_HOME -u XDG_CACHE_HOME -u DOLPHIN_EMU_USERPATH -u DISPLAY -u WAYLAND_DISPLAY \
+  env -u XDG_CONFIG_HOME -u XDG_CACHE_HOME -u XDG_DATA_HOME -u DOLPHIN_EMU_USERPATH -u DISPLAY -u WAYLAND_DISPLAY \
     ${SHOW_DISPLAY:+DISPLAY=$SHOW_DISPLAY} HOME="$T/home" \
     APPDIR="$T/appdir" STUB_OUT="$T/args" sh "$HERE/AppRun.sh" "$@" 2>"$T/stderr"
 }
@@ -320,6 +324,92 @@ out=$(launch --version 2>&1; cat "$T/stderr")
 check "shows both versions" '[ "$out" = "MKDD AppImage 1.2.3 (Dolphin 2609a)" ]'
 check "starts nothing" '[ ! -f "$T/args" ]'
 rm -f "$T/appdir/version" "$T/appdir/dolphin-version"
+
+PACKS="$T/home/.local/share/mkdd-appimage/texture-packs"
+LOAD="$T/home/.local/share/dolphin-emu/Load"
+STAGE="$T/home/.cache/mkdd-appimage/load"
+# arg_value PREFIX: what follows = in the first argument that starts with PREFIX.
+arg_value() { [ -f "$T/args" ] && grep "^$1" "$T/args" | head -n 1 | cut -d= -f2-; }
+export STUB_GAME_ID=GM4E01
+# put KEY VALUE: set one key in settings.ini, the way the window does.
+put() {
+  mkdir -p "$(dirname "$SETTINGS")"
+  { grep -v "^$1=" "$SETTINGS" 2>/dev/null || true; printf '%s=%s\n' "$1" "$2"; } > "$SETTINGS.tmp"
+  mv "$SETTINGS.tmp" "$SETTINGS"
+}
+
+echo "# texture packs: none yet"
+reset
+MKDD_PADS="" run
+check "packs on by default" 'has_arg Graphics.Settings.HiresTextures=True'
+check "no preload, no dump" 'has_arg Graphics.Settings.CacheHiresTextures=False && has_arg Graphics.Settings.DumpTextures=False'
+check "Dolphin's own Load folder" '! grep -q LoadPath "$T/args"'
+
+echo "# texture packs: two packs and Dolphin's own folders"
+reset
+mkdir -p "$PACKS/b hd karts/karts" "$PACKS/a font" "$PACKS/empty" "$LOAD/Textures/GM4E01" "$LOAD/Textures/GALE01" "$LOAD/GraphicMods"
+touch "$PACKS/b hd karts/karts/tex1_64x64_0123456789abcdef_5.png" "$PACKS/b hd karts/karts/tex1_64x64_0123456789abcdef_5_mip1.png" \
+  "$PACKS/b hd karts/tex1_32x32_aaaaaaaaaaaaaaaa_14.DDS" "$PACKS/a font/tex1_8x8_bbbbbbbbbbbbbbbb_0.png" "$PACKS/empty/readme.txt"
+MKDD_PADS="" run
+check "own Load folder for the run" '[ "$(arg_value Dolphin.General.LoadPath)" = "$STAGE" ] && grep -B1 -x "Dolphin.General.LoadPath=$STAGE" "$T/args" | head -1 | grep -qx -- -C'
+check "all packs as the game's textures" '[ "$(readlink "$STAGE/Textures/GM4E01")" = "$PACKS" ]'
+check "other games' textures linked" '[ "$(readlink "$STAGE/Textures/GALE01")" = "$LOAD/Textures/GALE01" ]'
+check "graphics mods linked" '[ "$(readlink "$STAGE/GraphicMods")" = "$LOAD/GraphicMods" ]'
+check "Dolphin's folder untouched" '[ -d "$LOAD/Textures/GM4E01" ] && [ ! -L "$LOAD/Textures/GM4E01" ]'
+check "says which" 'grep -q "Texture packs: all" "$T/stderr"'
+out=$(launch --textures)
+check "--textures counts, mipmaps left out" 'grep -qx "  b hd karts: 2 textures" <<<"$out" && grep -qx "  a font: 1 texture" <<<"$out"'
+check "--textures skips a folder without textures" '! grep -q empty <<<"$out"'
+check "--textures order and choice" '[ "$(grep -n "a font" <<<"$out" | cut -d: -f1)" -lt "$(grep -n "b hd" <<<"$out" | cut -d: -f1)" ] && grep -q "Loads: all packs" <<<"$out"'
+
+echo "# texture packs: one pack"
+put texture_pack "b hd karts"
+MKDD_PADS="" run
+check "only that pack" '[ "$(readlink "$STAGE/Textures/GM4E01")" = "$PACKS/b hd karts" ]'
+check "still linked, not copied" '[ -f "$PACKS/b hd karts/karts/tex1_64x64_0123456789abcdef_5.png" ]'
+out=$(launch --textures)
+check "--textures says so" 'grep -qx "Loads: b hd karts" <<<"$out"'
+put texture_pack "gone"
+MKDD_PADS="" run
+check "a missing pack falls back to all" '[ "$(readlink "$STAGE/Textures/GM4E01")" = "$PACKS" ] && grep -q "\"gone\" is not in" "$T/stderr"'
+put texture_pack "../.."
+MKDD_PADS="" run
+check "no folders outside the packs folder" '[ "$(readlink "$STAGE/Textures/GM4E01")" = "$PACKS" ]'
+
+echo "# texture packs: the European disc, and a disc without a readable id"
+STUB_GAME_ID=GM4P01 MKDD_PADS="" run
+check "linked as GM4P01" '[ "$(readlink "$STAGE/Textures/GM4P01")" = "$PACKS" ]'
+check "the USA folder is only another game's now" '[ "$(readlink "$STAGE/Textures/GM4E01")" = "$LOAD/Textures/GM4E01" ]'
+STUB_GAME_ID= MKDD_PADS="" run
+check "region-free GM4" '[ "$(readlink "$STAGE/Textures/GM4")" = "$PACKS" ]'
+
+echo "# texture packs: Dolphin's own LoadPath"
+mkdir -p "$T/myload/Riivolution"
+mkdir -p "$(dirname "$MAIN_INI")"
+printf '[General]\nLoadPath = %s/\n' "$T/myload" > "$MAIN_INI"
+MKDD_PADS="" run
+check "linked from there" '[ "$(readlink "$STAGE/Riivolution")" = "$T/myload/Riivolution" ] && [ ! -e "$STAGE/GraphicMods" ]'
+rm -f "$MAIN_INI"
+
+echo "# texture packs: preload, dump, off"
+put texture_preload 1; put texture_dump 1
+MKDD_PADS="" run
+check "preload" 'has_arg Graphics.Settings.CacheHiresTextures=True'
+check "dump" 'has_arg Graphics.Settings.DumpTextures=True && grep -q "Dumping textures to $T/home/.local/share/dolphin-emu/Dump/Textures/" "$T/stderr"'
+put textures 0
+MKDD_PADS="" run
+check "off: no packs, no own Load folder" 'has_arg Graphics.Settings.HiresTextures=False && ! grep -q LoadPath "$T/args"'
+check "off: dumping still works" 'has_arg Graphics.Settings.DumpTextures=True'
+out=$(launch --textures)
+check "--textures says off" 'grep -qx "Texture packs are off." <<<"$out"'
+
+echo "# texture packs: a fresh setup"
+reset
+mkdir -p "$PACKS/p"
+touch "$PACKS/p/tex1_8x8_cccccccccccccccc_0.png"
+MKDD_PADS="" run
+check "linked" '[ -L "$STAGE/Textures/GM4E01" ]'
+unset STUB_GAME_ID
 
 echo "# CRLF line endings in an existing file"
 reset
