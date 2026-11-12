@@ -1,6 +1,7 @@
 name: AppImage
 
-# Builds and tests the Dolphin AppImage for x86_64 and aarch64 on every PR and push.
+# Builds and tests the Dolphin AppImage for x86_64 and aarch64 on every PR and push
+# that touches it.
 # No game data is involved. Releases work like MichielMak/flightscanner; every push
 # to main then does one of two things:
 # 1. appimage/VERSION has a version without a tag (a release PR was just merged):
@@ -13,8 +14,9 @@ on:
   push:
     branches: [main]
     paths: ["appimage/**", ".github/workflows/appimage.yml"]
+  # Every PR runs this workflow, so the required "AppImage OK" check always reports.
+  # The changes job skips the build when a PR does not touch the AppImage.
   pull_request:
-    paths: ["appimage/**", ".github/workflows/appimage.yml"]
   workflow_dispatch:
 
 permissions:
@@ -27,7 +29,33 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      appimage: ${{ steps.diff.outputs.appimage }}
+    steps:
+      - name: Does this touch the AppImage?
+        id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Pushes to main are already filtered by paths; manual runs always build.
+          if [ -z "$PR" ]; then
+            echo "appimage=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename')
+          if grep -Eq '^(appimage/|\.github/workflows/appimage\.yml$)' <<<"$files"; then
+            echo "appimage=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "appimage=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: changes
+    if: needs.changes.outputs.appimage == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -75,6 +103,22 @@ jobs:
         with:
           name: settings-window-${{ matrix.target.arch }}
           path: settings-*.png
+
+  # The one check branch protection requires on main. It passes when the build passed
+  # or was skipped because the PR does not touch the AppImage.
+  ok:
+    name: AppImage OK
+    needs: [changes, build]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check results
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          BUILD: ${{ needs.build.result }}
+        run: |
+          echo "changes: $CHANGES, build: $BUILD"
+          [ "$CHANGES" = success ] && { [ "$BUILD" = success ] || [ "$BUILD" = skipped ]; }
 
   release:
     needs: build
