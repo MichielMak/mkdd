@@ -20,15 +20,23 @@ a display or a controller.
 
 ```sh
 ./MKDD-Dolphin-*.AppImage                        # settings window: pick the disc image, then Play
+./MKDD-Dolphin-*.AppImage --settings             # the settings window, same as no argument
 ./MKDD-Dolphin-*.AppImage --game                 # straight into the game, fullscreen
+./MKDD-Dolphin-*.AppImage --game ~/games/mkdd.rvz # the same with this disc image
 ./MKDD-Dolphin-*.AppImage ~/games/mkdd.rvz       # start this disc image with the saved settings, and remember it
 ./MKDD-Dolphin-*.AppImage --dol                  # boot build/MarioClub_us/main.dol (run from the repo root)
 ./MKDD-Dolphin-*.AppImage --dol path/main.dol path/disc.iso
 ./MKDD-Dolphin-*.AppImage --pads                 # connected controllers and the ports they get
 ./MKDD-Dolphin-*.AppImage --textures             # texture packs and which ones the game loads
 ./MKDD-Dolphin-*.AppImage --dolphin              # plain Dolphin, e.g. to change controls
+./MKDD-Dolphin-*.AppImage --tool header disc.iso # dolphin-tool, with any of its commands
+./MKDD-Dolphin-*.AppImage --forget               # forget the remembered disc image
+./MKDD-Dolphin-*.AppImage --version              # the AppImage and Dolphin versions
 ./MKDD-Dolphin-*.AppImage --help
 ```
+
+Put `--no-automap` before any of these to leave Dolphin's controller mapping alone for that run
+(see [Controllers](#controllers)).
 
 - Escape quits the game (Dolphin's default Stop key). The game runs without Dolphin's main window, so
   quitting it ends the run.
@@ -108,7 +116,7 @@ is port 1 (Dolphin's default keys).
 
 | GameCube | Gamepad |
 |---|---|
-| A, B, X, Y | bottom, left, right, top face button (GameCube positions) |
+| A, B, X, Y | bottom, right, left, top face button (by the labels on Xbox-style pads and the Steam Deck) |
 | Z | right shoulder (RB / R1) |
 | L, R | left and right trigger, analog |
 | Control stick, C stick | left stick, right stick |
