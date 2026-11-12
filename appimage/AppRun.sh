@@ -321,11 +321,12 @@ gamepads() {
 	printf '%s\n' "$1" | awk -F '\t' 'NF >= 3 && $2 == 1 { print $1 "/" $3 }'
 }
 
-# The mapping for a gamepad. GameCube buttons go by position: A is the bottom
-# face button, B the left one.
+# The mapping for a gamepad. GameCube buttons go by label, as printed on
+# Xbox-style pads (Steam Deck included): A is the bottom face button, B the
+# right one, X the left one.
 PAD_MAP='Buttons/A = `Button S`
-Buttons/B = `Button W`
-Buttons/X = `Button E`
+Buttons/B = `Button E`
+Buttons/X = `Button W`
 Buttons/Y = `Button N`
 Buttons/Z = `Shoulder R`
 Buttons/Start = `Start`

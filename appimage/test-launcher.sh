@@ -53,7 +53,8 @@ reset
 MKDD_PADS="0${TAB}1${TAB}Xbox Series X Controller" run
 check "port 1 device" '[ "$(value GCPad1 Device)" = "SDL/0/Xbox Series X Controller" ]'
 check "A on bottom face button" '[ "$(value GCPad1 Buttons/A)" = "\`Button S\`" ]'
-check "B on left face button" '[ "$(value GCPad1 Buttons/B)" = "\`Button W\`" ]'
+check "B on right face button" '[ "$(value GCPad1 Buttons/B)" = "\`Button E\`" ]'
+check "X on left face button" '[ "$(value GCPad1 Buttons/X)" = "\`Button W\`" ]'
 check "analog R" '[ "$(value GCPad1 Triggers/R-Analog)" = "\`Trigger R\`" ]'
 check "free ports 2-4 on for hotplug" '[ "$(grep -c "^Dolphin.Core.SIDevice" "$T/args")" = 3 ] && ! grep -q SIDevice0 "$T/args"'
 check "ports 2-4 unplugged until a pad comes" '[ "$(value GCPad2 Device)" = "SDL/0/No controller (mkdd-appimage)" ] && [ -z "$(value GCPad2 Buttons/A)" ]'
