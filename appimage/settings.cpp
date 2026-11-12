@@ -13,27 +13,37 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
+#include <QGuiApplication>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMap>
 #include <QProcess>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSlider>
 #include <QTextStream>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
+#include <QVector>
 #include <QWidget>
+
+#include <algorithm>
+#include <memory>
 
 namespace {
 
@@ -104,6 +114,53 @@ PathRow pathRow(QWidget *parent, const QString &value, const QString &title, con
             edit->setText(file);
     });
     return {w, edit};
+}
+
+// A texture file the way Dolphin finds one: tex1_..., PNG or DDS. The _mipN
+// files are levels of another texture, so they do not count.
+bool isTexture(const QString &fileName)
+{
+    static const QRegularExpression name("^tex1_.*\\.(png|dds)$", QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression mip("_mip\\d", QRegularExpression::CaseInsensitiveOption);
+    return name.match(fileName).hasMatch() && !mip.match(fileName).hasMatch();
+}
+
+struct TexturePack {
+    QString name;
+    int textures;
+};
+
+// Each folder in root is a pack. Links to folders below a pack are not
+// followed, like Dolphin's own walk.
+QVector<TexturePack> scanPacks(const QString &root)
+{
+    QVector<TexturePack> packs;
+    const QDir dir(root);
+    if (root.isEmpty() || !dir.exists())
+        return packs;
+    // Dolphin's order: byte order of the path, which is what decides between two packs.
+    QStringList folders = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    std::sort(folders.begin(), folders.end(), [](const QString &a, const QString &b) {
+        return a.toUtf8() < b.toUtf8();
+    });
+    for (const QString &folder : folders) {
+        int n = 0;
+        QDirIterator it(dir.filePath(folder), QDir::Files, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            it.next();
+            if (isTexture(it.fileName()))
+                ++n;
+        }
+        if (n > 0)
+            packs.push_back({folder, n});
+    }
+    return packs;
+}
+
+void openFolder(const QString &path)
+{
+    QDir().mkpath(path);
+    QDesktopServices::openUrl(QUrl::fromLocalFile(path));
 }
 
 void setCombo(QComboBox *combo, const QString &value)
@@ -216,6 +273,86 @@ int main(int argc, char **argv)
     audio->addRow(QObject::tr("Volume"), volumeRow);
     layout->addWidget(audioBox);
 
+    // --- Texture packs
+    const QString packsDir = qEnvironmentVariable("MKDD_TEXTURE_PACKS");
+    const QString dumpsDir = qEnvironmentVariable("MKDD_TEXTURE_DUMPS");
+    auto *texBox = new QGroupBox(QObject::tr("Texture packs"), &window);
+    auto *tex = new QFormLayout(texBox);
+    auto *texRow = new QWidget(texBox);
+    auto *texRowLayout = new QHBoxLayout(texRow);
+    texRowLayout->setContentsMargins(0, 0, 0, 0);
+    auto *textures = new QCheckBox(QObject::tr("Use texture packs"), texRow);
+    textures->setChecked(get(s, "textures", "1") == "1");
+    auto *openPacks = new QPushButton(QObject::tr("Open packs folder"), texRow);
+    openPacks->setEnabled(!packsDir.isEmpty());
+    texRowLayout->addWidget(textures, 1);
+    texRowLayout->addWidget(openPacks);
+    tex->addRow(texRow);
+    auto *pack = new QComboBox(texBox);
+    pack->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    tex->addRow(QObject::tr("Pack"), pack);
+    auto *packNote = new QLabel(texBox);
+    packNote->setWordWrap(true);
+    packNote->setEnabled(false);
+    tex->addRow(packNote);
+    auto *preload = new QCheckBox(QObject::tr("Load all pack textures at the start (no stutter, needs more memory)"), texBox);
+    preload->setChecked(get(s, "texture_preload", "0") == "1");
+    tex->addRow(preload);
+    auto *dumpRow = new QWidget(texBox);
+    auto *dumpRowLayout = new QHBoxLayout(dumpRow);
+    dumpRowLayout->setContentsMargins(0, 0, 0, 0);
+    auto *dump = new QCheckBox(QObject::tr("Save the game's textures as PNG files, to make a pack"), dumpRow);
+    dump->setChecked(get(s, "texture_dump", "0") == "1");
+    auto *openDumps = new QPushButton(QObject::tr("Open dumps folder"), dumpRow);
+    openDumps->setEnabled(!dumpsDir.isEmpty());
+    dumpRowLayout->addWidget(dump, 1);
+    dumpRowLayout->addWidget(openDumps);
+    tex->addRow(dumpRow);
+    layout->addWidget(texBox);
+    QObject::connect(openPacks, &QPushButton::clicked, texBox, [=] { openFolder(packsDir); });
+    QObject::connect(openDumps, &QPushButton::clicked, texBox, [=] { openFolder(dumpsDir); });
+
+    // The pack the player chose, kept while the list is filled again.
+    auto packWanted = std::make_shared<QString>(get(s, "texture_pack", ""));
+    auto filling = std::make_shared<bool>(false);
+    auto updatePacks = [=] {
+        const QVector<TexturePack> packs = scanPacks(packsDir);
+        const QLocale locale;
+        *filling = true;
+        pack->clear();
+        pack->addItem(QObject::tr("All packs"), QString());
+        for (const TexturePack &p : packs)
+            pack->addItem(p.textures == 1 ? QObject::tr("%1 (1 texture)").arg(p.name)
+                                          : QObject::tr("%1 (%2 textures)").arg(p.name, locale.toString(p.textures)),
+                          p.name);
+        if (!packWanted->isEmpty() && pack->findData(*packWanted) < 0)
+            pack->addItem(QObject::tr("%1 (not found, all packs load)").arg(*packWanted), *packWanted);
+        setCombo(pack, *packWanted);
+        *filling = false;
+        if (packs.isEmpty())
+            packNote->setText(QObject::tr("No packs yet. Put each pack in its own folder in the packs folder. "
+                                          "Until then, Dolphin's own Load/Textures folder is used."));
+        else if (packs.size() > 1)
+            packNote->setText(QObject::tr("With all packs, the first by name wins where two replace the same texture."));
+        else
+            packNote->clear();
+        packNote->setVisible(!packNote->text().isEmpty());
+        const bool on = textures->isChecked();
+        pack->setEnabled(on && !packs.isEmpty());
+        preload->setEnabled(on);
+    };
+    QObject::connect(pack, &QComboBox::currentIndexChanged, texBox, [=] {
+        if (!*filling)
+            *packWanted = pack->currentData().toString();
+    });
+    QObject::connect(textures, &QCheckBox::toggled, texBox, updatePacks);
+    // Packs copied in from the file manager show up when the window is back in front.
+    QObject::connect(qApp, &QGuiApplication::applicationStateChanged, texBox, [=](Qt::ApplicationState st) {
+        if (st == Qt::ApplicationActive)
+            updatePacks();
+    });
+    updatePacks();
+
     // --- Controllers
     auto *padBox = new QGroupBox(QObject::tr("Controllers"), &window);
     auto *pads = new QVBoxLayout(padBox);
@@ -291,6 +428,10 @@ int main(int argc, char **argv)
         s["widescreen"] = wide->isChecked() ? "1" : "0";
         s["volume"] = QString::number(volume->value());
         s["automap"] = automap->isChecked() ? "1" : "0";
+        s["textures"] = textures->isChecked() ? "1" : "0";
+        s["texture_pack"] = *packWanted;
+        s["texture_preload"] = preload->isChecked() ? "1" : "0";
+        s["texture_dump"] = dump->isChecked() ? "1" : "0";
         if (!save(settingsPath, s))
             fprintf(stderr, "mkdd-settings: cannot write %s\n", qPrintable(settingsPath));
     };

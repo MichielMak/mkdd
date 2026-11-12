@@ -9,6 +9,7 @@
 #   MKDD.AppImage --settings         the settings window
 #   MKDD.AppImage --dol [DOL] [DISC] boot a main.dol built by this decomp, with DISC's files
 #   MKDD.AppImage --pads             show connected controllers and their ports
+#   MKDD.AppImage --textures         show the texture packs and which ones load
 #   MKDD.AppImage --dolphin ARGS...  plain Dolphin
 #   MKDD.AppImage --tool ARGS...     dolphin-tool
 #   MKDD.AppImage --forget           forget the remembered disc
@@ -20,7 +21,8 @@
 #
 # Before a game boots, connected gamepads are mapped to GameCube ports 1-4,
 # and gamepads plugged in while Dolphin runs get the next free port (see automap
-# below). --no-automap or MKDD_AUTOMAP=0 skips that.
+# below). --no-automap or MKDD_AUTOMAP=0 skips that. Texture packs in
+# PACKS_DIR load through a Load folder of the run's own (see texture_overrides).
 set -e
 
 DOLPHIN="$APPDIR/AppRun.dolphin.sh"
@@ -49,6 +51,21 @@ else
 fi
 PAD_INI="$DOLPHIN_CONFIG/GCPadNew.ini"
 MAIN_INI="$DOLPHIN_CONFIG/Dolphin.ini"
+# Dolphin's data folder, which holds Load/ and Dump/.
+if [ -n "$DOLPHIN_EMU_USERPATH" ]; then
+	DOLPHIN_DATA="$DOLPHIN_EMU_USERPATH"
+elif [ -d "$HOME/.dolphin-emu" ]; then
+	DOLPHIN_DATA="$HOME/.dolphin-emu"
+else
+	DOLPHIN_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/dolphin-emu"
+fi
+# Texture packs, one folder each. See texture_overrides below.
+PACKS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/mkdd-appimage/texture-packs"
+# The Load folder Dolphin gets while packs are on, rebuilt at every start.
+LOAD_STAGE="$CACHE_DIR/load"
+# Set by texture_overrides; passed to Dolphin as its own argument, so a path
+# with spaces stays one word.
+LOAD_PATH=
 # What automap last wrote, and the GCPadNew.ini it replaced.
 WRITTEN_INI="$CONFIG_DIR/GCPadNew.written.ini"
 BACKUP_INI="$CONFIG_DIR/GCPadNew.backup.ini"
@@ -68,6 +85,7 @@ Usage: $SELF [--no-automap] [DISC | OPTION]
   --dol [DOL] [DISC]     boot a main.dol built by the decomp (default: $DEFAULT_DOL)
                          with the game files of DISC (default: the remembered disc)
   --pads                 show connected controllers and the ports they get
+  --textures             show the texture packs and which ones the game loads
   --no-automap           leave Dolphin's controller mapping alone for this run
   --dolphin ARGS...      plain Dolphin, ARGS go to dolphin-emu
   --tool ARGS...         dolphin-tool
@@ -78,6 +96,9 @@ Escape quits the game. Gamepads connected at start are mapped to GameCube ports
 1-4. Without one, the keyboard is port 1. A gamepad plugged in later gets the
 next free port: quit and start the game again to use it. Once you change the
 mapping in Dolphin, it stays yours.
+
+Texture packs go in $PACKS_DIR,
+each in its own folder.
 
 Settings: $SETTINGS
 Dolphin settings: $DOLPHIN_CONFIG
@@ -581,7 +602,7 @@ boot() {
 	if [ "$AUTOMAP_ACTIVE" = 1 ] && { [ -n "${MKDD_PADS_EVENTS+x}" ] || [ -x "$PADS_TOOL" ]; }; then
 		save_port_state
 		# shellcheck disable=SC2086
-		"$DOLPHIN" dolphin-emu $AUTOMAP_ARGS "$@" &
+		"$DOLPHIN" dolphin-emu $AUTOMAP_ARGS ${LOAD_PATH:+-C} ${LOAD_PATH:+"Dolphin.General.LoadPath=$LOAD_PATH"} "$@" &
 		dolphin_pid=$!
 		watch_pads "$dolphin_pid" &
 		watch_pid=$!
@@ -593,7 +614,7 @@ boot() {
 		exit "$status"
 	fi
 	# shellcheck disable=SC2086
-	exec "$DOLPHIN" dolphin-emu $AUTOMAP_ARGS "$@"
+	exec "$DOLPHIN" dolphin-emu $AUTOMAP_ARGS ${LOAD_PATH:+-C} ${LOAD_PATH:+"Dolphin.General.LoadPath=$LOAD_PATH"} "$@"
 }
 
 show_pads() {
@@ -623,6 +644,173 @@ show_pads() {
 	esac
 }
 
+# --- texture packs -------------------------------------------------------------------
+#
+# Dolphin loads custom textures (PNG or DDS files named tex1_...) from
+# Load/Textures/<game id>/ and every folder below it, or from the region-free
+# Load/Textures/GM4/ when there is no folder for the exact id. Where two files
+# have the same name, the first by path wins: HiresTextures.cpp sorts them.
+#
+# Packs live in PACKS_DIR, one folder each, so they can be used one at a time.
+# Dolphin has no such choice, so while packs are on it gets a Load folder of its
+# own for that run (-C Dolphin.General.LoadPath): LOAD_STAGE, where
+# Textures/<game id> is a link to PACKS_DIR (all packs, the first by name wins)
+# or to one pack. Everything else in Dolphin's Load folder is linked in as it is,
+# so graphics mods, Riivolution patches and other games' textures keep working.
+# Only Dolphin's own Load/Textures/<game id> is left out, since the packs take
+# its place. Without packs in PACKS_DIR, nothing is redirected and Dolphin's own
+# folder works as before.
+#
+# Dolphin's directory walk does not follow links below the folder it starts
+# from, so a pack must be a real folder, not a link inside one.
+
+# has_textures DIR: true when DIR holds a replacement texture, the way Dolphin finds them.
+has_textures() {
+	[ -n "$(texture_files "$1" | head -n 1)" ]
+}
+
+# texture_files DIR: the textures Dolphin loads from DIR, mipmap levels left out.
+# The trailing / follows DIR when it is a link; below it, links to folders are
+# not followed, like Dolphin's walk.
+texture_files() {
+	[ -d "$1" ] || return 0
+	find "$1/" \( -type f -o -type l \) -iname 'tex1_*' \( -iname '*.png' -o -iname '*.dds' \) \
+		! -iname '*_mip[0-9]*' 2>/dev/null
+}
+
+# The pack folders in PACKS_DIR, in Dolphin's order.
+pack_names() {
+	[ -d "$PACKS_DIR" ] || return 0
+	for p in "$PACKS_DIR"/*/; do
+		[ -d "$p" ] || continue
+		p=${p%/}
+		printf '%s\n' "${p##*/}"
+	done | LC_ALL=C sort
+}
+
+# The folder Dolphin gets as its textures folder, or nothing when there are no packs.
+texture_target() {
+	want=$(setting texture_pack '')
+	if [ -n "$want" ]; then
+		case "$want" in
+			*/*|.|..) ;;
+			*) if has_textures "$PACKS_DIR/$want"; then printf '%s\n' "$PACKS_DIR/$want"; return 0; fi ;;
+		esac
+		say "Texture pack \"$want\" is not in $PACKS_DIR; using all packs."
+	fi
+	if has_textures "$PACKS_DIR"; then printf '%s\n' "$PACKS_DIR"; fi
+	return 0
+}
+
+# disc_game_id DISC: the disc's game id (GM4E01 for the USA disc), or nothing.
+disc_game_id() {
+	"$DOLPHIN" dolphin-tool header -i "$1" 2>/dev/null \
+		| awk -F': *' '$1 == "Game ID" { print $2; exit }' | tr -cd 'A-Za-z0-9'
+}
+
+# Dolphin's Load and Dump folders, its own setting first.
+dolphin_load_dir() {
+	d=$(ini_get "$MAIN_INI" General LoadPath)
+	printf '%s\n' "${d:-$DOLPHIN_DATA/Load}" | sed 's:/*$::'
+}
+dolphin_dump_dir() {
+	d=$(ini_get "$MAIN_INI" General DumpPath)
+	printf '%s\n' "${d:-$DOLPHIN_DATA/Dump}" | sed 's:/*$::'
+}
+
+# stage_load TARGET ID: build LOAD_STAGE with TARGET as Textures/ID.
+stage_load() {
+	real=$(dolphin_load_dir)
+	region_free=$(printf '%.3s' "$2")
+	# Links only: rm does not follow them into the folders they point to.
+	rm -rf "$LOAD_STAGE"
+	mkdir -p "$LOAD_STAGE/Textures"
+	for e in "$real"/*; do
+		[ -e "$e" ] || continue
+		[ "${e##*/}" = Textures ] && continue
+		ln -s "$e" "$LOAD_STAGE/${e##*/}"
+	done
+	for e in "$real/Textures"/*; do
+		[ -e "$e" ] || continue
+		n=${e##*/}
+		[ "$n" = "$2" ] || [ "$n" = "$region_free" ] && continue
+		ln -s "$e" "$LOAD_STAGE/Textures/$n"
+	done
+	ln -s "$1" "$LOAD_STAGE/Textures/$2"
+}
+
+# texture_overrides DISC: the texture settings as Dolphin overrides, added to
+# RUN_ARGS, and LOAD_PATH when the packs need their own Load folder.
+texture_overrides() {
+	LOAD_PATH=
+	if [ "$(setting texture_dump 0)" = 1 ]; then
+		RUN_ARGS="$RUN_ARGS -C Graphics.Settings.DumpTextures=True"
+		say "Dumping textures to $(dolphin_dump_dir)/Textures/"
+	else
+		RUN_ARGS="$RUN_ARGS -C Graphics.Settings.DumpTextures=False"
+	fi
+	if [ "$(setting textures 1)" != 1 ]; then
+		RUN_ARGS="$RUN_ARGS -C Graphics.Settings.HiresTextures=False"
+		return 0
+	fi
+	RUN_ARGS="$RUN_ARGS -C Graphics.Settings.HiresTextures=True"
+	if [ "$(setting texture_preload 0)" = 1 ]; then
+		RUN_ARGS="$RUN_ARGS -C Graphics.Settings.CacheHiresTextures=True"
+	else
+		RUN_ARGS="$RUN_ARGS -C Graphics.Settings.CacheHiresTextures=False"
+	fi
+	target=$(texture_target)
+	[ -n "$target" ] || return 0
+	id=$(disc_game_id "$1")
+	# The region-free name still matches when the id cannot be read.
+	[ -n "$id" ] || id=GM4
+	stage_load "$target" "$id"
+	LOAD_PATH="$LOAD_STAGE"
+	if [ "$target" = "$PACKS_DIR" ]; then
+		say "Texture packs: all in $PACKS_DIR"
+	else
+		say "Texture pack: ${target##*/}"
+	fi
+}
+
+show_textures() {
+	echo "Texture packs in $PACKS_DIR:"
+	names=$(pack_names)
+	found=0
+	if [ -n "$names" ]; then
+		while IFS= read -r p; do
+			n=$(texture_files "$PACKS_DIR/$p" | wc -l | tr -d ' ')
+			[ "$n" -gt 0 ] || continue
+			found=1
+			if [ "$n" = 1 ]; then echo "  $p: 1 texture"; else echo "  $p: $n textures"; fi
+		done <<EOF
+$names
+EOF
+	fi
+	loose=$(find "$PACKS_DIR/" -maxdepth 1 \( -type f -o -type l \) -iname 'tex1_*' \
+		\( -iname '*.png' -o -iname '*.dds' \) ! -iname '*_mip[0-9]*' 2>/dev/null | wc -l | tr -d ' ')
+	if [ "$loose" -gt 0 ]; then
+		found=1
+		echo "  (loose files): $loose textures"
+	fi
+	[ "$found" = 1 ] || echo "  none. Put each pack in its own folder there."
+	if [ "$(setting textures 1)" != 1 ]; then
+		echo "Texture packs are off."
+	elif [ "$found" = 0 ]; then
+		echo "Dolphin's own $(dolphin_load_dir)/Textures/ is used."
+	else
+		target=$(texture_target 2>/dev/null)
+		if [ "$target" = "$PACKS_DIR" ]; then
+			echo "Loads: all packs. Where two replace the same texture, the first by name wins."
+		else
+			echo "Loads: ${target##*/}"
+		fi
+	fi
+	if [ "$(setting texture_dump 0)" = 1 ]; then
+		echo "Dumps: on, to $(dolphin_dump_dir)/Textures/"
+	fi
+}
+
 # --- settings window and starting the game ----------------------------------------
 
 has_display() { [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; }
@@ -630,7 +818,8 @@ has_display() { [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; }
 # The settings window's choices as Dolphin overrides for this run (-C is not
 # saved). Always batch mode: no Dolphin main window, and quitting the game
 # (Escape, Dolphin's default Stop key) ends the run, as Steam expects.
-# run_overrides [fullscreen]: sets RUN_ARGS; "fullscreen" forces it on.
+# run_overrides MODE DISC: sets RUN_ARGS (and LOAD_PATH); MODE "fullscreen"
+# forces fullscreen on.
 RUN_ARGS=
 run_overrides() {
 	RUN_ARGS="-b -C Dolphin.Interface.ConfirmStop=False"
@@ -661,6 +850,7 @@ run_overrides() {
 		''|*[!0-9]*) ;;
 		*) [ "$vol" -le 100 ] && RUN_ARGS="$RUN_ARGS -C Dolphin.DSP.Volume=$vol" ;;
 	esac
+	texture_overrides "$2"
 	return 0
 }
 
@@ -671,6 +861,7 @@ settings_window() {
 		play "$2" ""
 	fi
 	code=0
+	MKDD_TEXTURE_PACKS="$PACKS_DIR" MKDD_TEXTURE_DUMPS="$(dolphin_dump_dir)/Textures" \
 	MKDD_DOLPHIN_VERSION=$(cat "$APPDIR/dolphin-version" 2>/dev/null || true) \
 	MKDD_APPIMAGE_VERSION=$(cat "$APPDIR/version" 2>/dev/null || true) \
 		"$SETTINGS_TOOL" "$SETTINGS" "$1" || code=$?
@@ -704,7 +895,7 @@ play() {
 		settings_window "Pick your disc image, then press Play." "$1"
 	fi
 	disc=$(need_disc "$d")
-	run_overrides "$1"
+	run_overrides "$1" "$disc"
 	if [ "$(setting use_dol 0)" = 1 ] && [ -n "$(setting dol '')" ]; then
 		boot_dol "$(setting dol '')" "$disc"
 	fi
@@ -736,6 +927,9 @@ case "$1" in
 	--pads)
 		show_pads
 		exit 0 ;;
+	--textures)
+		show_textures
+		exit 0 ;;
 	--dolphin)
 		shift
 		exec "$DOLPHIN" dolphin-emu "$@" ;;
@@ -751,7 +945,7 @@ case "$1" in
 		dol="${1:-$DEFAULT_DOL}"
 		[ $# -gt 0 ] && shift
 		disc=$(need_disc "$1")
-		run_overrides ""
+		run_overrides "" "$disc"
 		boot_dol "$dol" "$disc" ;;
 	-*)
 		usage >&2

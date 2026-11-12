@@ -61,6 +61,8 @@ jobs:
           # Runs the bundled mkdd-pads; a runner has no controllers.
           out=$("$a" --pads 2>&1); echo "$out"
           grep -q 'No controllers connected' <<<"$out"
+          out=$("$a" --textures 2>&1); echo "$out"
+          grep -q 'none. Put each pack in its own folder there.' <<<"$out"
           # The settings window loads the bundled Qt and draws itself.
           DISPLAY=:99 MKDD_SETTINGS_SCREENSHOT="$PWD/settings-${{ matrix.target.arch }}.png" "$a"
           test -s "settings-${{ matrix.target.arch }}.png"
